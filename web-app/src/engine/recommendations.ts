@@ -1,0 +1,166 @@
+import type { ProcessedData } from './types';
+import {
+  buildStockAggregates,
+  computeStockLevelScore,
+  getLastNDailyCandles,
+  getStockBehaviorSummary,
+  latestDayHasDistribution,
+} from './stockAggregation';
+
+export type RecommendationVerdict = 'STRONG BUY' | 'BUY' | 'WATCH' | 'AVOID' | 'SELL';
+
+export interface StockRecommendation {
+  stock: string;
+  latestClose: number;
+  latestDate: string;
+  totalScore: number;
+  grade: string;
+  signal: string;
+  phase: string;
+  wyckoffStage: string;
+  phaseScore: number;
+  phaseConfidence: number;
+  behaviorLabel: string;
+  cumulativeNetBuy: number;
+  topBrokerNetAccum: number;
+  topBrokerConcentration: number;
+  brokerFlowSignal: string;
+  brokerDomination: string;
+  avgVolRatio: number;
+  volSignal: string;
+  absorptionDays: number;
+  distributionDays: number;
+  estimateStatus: string;
+  pricePhase: string;
+  candleStrength: number;
+  verdictScore: number;
+  verdict: RecommendationVerdict;
+  entryLow: number;
+  entryHigh: number;
+  stopLoss: number;
+  tp1: number;
+  tp2: number;
+  tp3: number;
+  riskPercent: number;
+  tp1RR: number;
+  tp2RR: number;
+  tp3RR: number;
+  scoreBreakdown: {
+    brokerFlow: number;
+    volume: number;
+    phase: number;
+    behavior: number;
+    price: number;
+  };
+  warnings: string[];
+}
+
+export function buildRecommendations(data: ProcessedData[]): StockRecommendation[] {
+  const aggregates = buildStockAggregates(data);
+  const results: StockRecommendation[] = [];
+
+  aggregates.forEach((agg, stock) => {
+    const lr = agg.latestRow;
+    const close = lr.raw.close;
+    const topNetBuy = agg.topBrokerNetAccum;
+    const avgTopBrokerConc = agg.avgTopBrokerConc;
+    const avgVolRatio = agg.avgVolRatio;
+
+    const { verdictScore, grade, signal, estimateStatus, scoreBreakdown } =
+      computeStockLevelScore(agg);
+
+    const warnings: string[] = [];
+    if (latestDayHasDistribution(agg)) {
+      warnings.push('⚠️ Terdeteksi pola distribusi bandar (hari terakhir)');
+    }
+    if (lr.phase.phase === 'MARKDOWN') warnings.push('⚠️ Saham dalam fase MARKDOWN – hindari beli');
+    if (lr.phase.phase === 'DISTRIBUTION') warnings.push('⚠️ Fase distribusi Wyckoff – bandar sedang jual');
+    if (agg.distributionDays > agg.absorptionDays && agg.distributionDays > 1) {
+      warnings.push('⚠️ Hari distribusi lebih banyak dari absorpsi');
+    }
+    if (avgVolRatio < 0.5) warnings.push('⚠️ Volume rendah – kurang likuid');
+    if (lr.price.pricePhase === 'MARKDOWN') warnings.push('⚠️ Price action menunjukkan tekanan jual kuat');
+    if (topNetBuy < 0) warnings.push('⚠️ Top broker net seller – bandar utama sedang distribusi');
+    if (avgTopBrokerConc > 0.6 && topNetBuy < 0) {
+      warnings.push('⚠️ Konsentrasi tinggi pada seller – distribusi terkonsentrasi');
+    }
+
+    let verdict: RecommendationVerdict = 'AVOID';
+    if (verdictScore >= 65 && warnings.length === 0) verdict = 'STRONG BUY';
+    else if (verdictScore >= 50 && warnings.length <= 1) verdict = 'BUY';
+    else if (verdictScore >= 35) verdict = 'WATCH';
+    else if (lr.phase.phase === 'MARKDOWN' || latestDayHasDistribution(agg)) verdict = 'SELL';
+    else verdict = 'AVOID';
+
+    const last5 = getLastNDailyCandles(agg.rows, 5);
+    const candleCount = Math.max(last5.length, 1);
+    const avgHigh = last5.reduce((acc, r) => acc + r.raw.high, 0) / candleCount;
+    const avgLow = last5.reduce((acc, r) => acc + r.raw.low, 0) / candleCount;
+    const avgRange = avgHigh - avgLow;
+    const slBuffer = Math.max(avgRange * 0.5, close * 0.03);
+
+    const entryLow = Math.round(close - avgRange * 0.2);
+    const entryHigh = Math.round(close);
+    const entryMid = (entryLow + entryHigh) / 2;
+    const stopLoss = Math.round(entryMid - slBuffer);
+    const riskAmt = entryMid - stopLoss;
+    const riskPercent = entryMid > 0 ? (riskAmt / entryMid) * 100 : 0;
+
+    const tp1 = Math.round(entryMid + riskAmt * 1.5);
+    const tp2 = Math.round(entryMid + riskAmt * 3);
+    const tp3 = Math.round(entryMid + riskAmt * 5);
+
+    results.push({
+      stock,
+      latestClose: close,
+      latestDate: lr.raw.date,
+      totalScore: verdictScore,
+      grade,
+      signal,
+      phase: lr.phase.phase,
+      wyckoffStage: lr.phase.wyckoffStage,
+      phaseScore: lr.phase.phaseScore,
+      phaseConfidence: lr.phase.confidence,
+      behaviorLabel: getStockBehaviorSummary(agg),
+      cumulativeNetBuy: topNetBuy,
+      topBrokerNetAccum: topNetBuy,
+      topBrokerConcentration: avgTopBrokerConc,
+      brokerFlowSignal: lr.flow.signal,
+      brokerDomination: lr.flow.domination,
+      avgVolRatio,
+      volSignal: lr.volume.volSignal,
+      absorptionDays: agg.absorptionDays,
+      distributionDays: agg.distributionDays,
+      estimateStatus,
+      pricePhase: lr.price.pricePhase,
+      candleStrength: lr.price.candleStrength,
+      verdictScore,
+      verdict,
+      entryLow,
+      entryHigh,
+      stopLoss,
+      tp1,
+      tp2,
+      tp3,
+      riskPercent,
+      tp1RR: 1.5,
+      tp2RR: 3,
+      tp3RR: 5,
+      scoreBreakdown,
+      warnings,
+    });
+  });
+
+  return results.sort((a, b) => b.verdictScore - a.verdictScore);
+}
+
+/** Rekomendasi satu saham pada tanggal tertentu (hanya data ≤ asOfDate). */
+export function buildRecommendationAsOf(
+  data: ProcessedData[],
+  stock: string,
+  asOfDate: string
+): StockRecommendation | null {
+  const subset = data.filter((r) => r.raw.stock === stock && r.raw.date <= asOfDate);
+  if (subset.length === 0) return null;
+  return buildRecommendations(subset).find((r) => r.stock === stock) ?? null;
+}
