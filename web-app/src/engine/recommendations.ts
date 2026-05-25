@@ -1,4 +1,6 @@
 import type { ProcessedData } from './types';
+import type { ScoringWeights } from './adaptiveScoring';
+import { DEFAULT_WEIGHTS } from './adaptiveScoring';
 import {
   buildStockAggregates,
   computeStockLevelScore,
@@ -55,26 +57,33 @@ export interface StockRecommendation {
   warnings: string[];
 }
 
-export function buildRecommendations(data: ProcessedData[]): StockRecommendation[] {
+export function buildRecommendations(
+  data: ProcessedData[],
+  weights: ScoringWeights = DEFAULT_WEIGHTS
+): StockRecommendation[] {
   const aggregates = buildStockAggregates(data);
   const results: StockRecommendation[] = [];
 
   aggregates.forEach((agg, stock) => {
-    const lr = agg.latestRow;
+    const snap = agg.latestSnapshot;
+    const lr = snap.priceRow;
     const close = lr.raw.close;
     const topNetBuy = agg.topBrokerNetAccum;
     const avgTopBrokerConc = agg.avgTopBrokerConc;
     const avgVolRatio = agg.avgVolRatio;
 
-    const { verdictScore, grade, signal, estimateStatus, scoreBreakdown } =
-      computeStockLevelScore(agg);
+    const { verdictScore: _rawScore, confidenceAdjustedScore, grade, signal, estimateStatus, scoreBreakdown, wyckoffConfidence, dataQuality } =
+      computeStockLevelScore(agg, weights);
+
+    // FIX A: Unified scoring — pakai confidenceAdjustedScore untuk semua keputusan
+    const effectiveScore = confidenceAdjustedScore;
 
     const warnings: string[] = [];
     if (latestDayHasDistribution(agg)) {
       warnings.push('⚠️ Terdeteksi pola distribusi bandar (hari terakhir)');
     }
-    if (lr.phase.phase === 'MARKDOWN') warnings.push('⚠️ Saham dalam fase MARKDOWN – hindari beli');
-    if (lr.phase.phase === 'DISTRIBUTION') warnings.push('⚠️ Fase distribusi Wyckoff – bandar sedang jual');
+    if (snap.phase.phase === 'MARKDOWN') warnings.push('⚠️ Saham dalam fase MARKDOWN – hindari beli');
+    if (snap.phase.phase === 'DISTRIBUTION') warnings.push('⚠️ Fase distribusi Wyckoff – bandar sedang jual');
     if (agg.distributionDays > agg.absorptionDays && agg.distributionDays > 1) {
       warnings.push('⚠️ Hari distribusi lebih banyak dari absorpsi');
     }
@@ -84,12 +93,23 @@ export function buildRecommendations(data: ProcessedData[]): StockRecommendation
     if (avgTopBrokerConc > 0.6 && topNetBuy < 0) {
       warnings.push('⚠️ Konsentrasi tinggi pada seller – distribusi terkonsentrasi');
     }
+    // FIX D: Warning data kualitas rendah
+    if (dataQuality === 'INSUFFICIENT') {
+      warnings.push('⚠️ Data < 10 hari — sinyal tidak reliable, tambah data historis');
+    } else if (dataQuality === 'LIMITED') {
+      warnings.push('⚠️ Data terbatas (< 20 hari) — confidence Wyckoff rendah');
+    }
+    // FIX C: Warning mayoritas broker jual
+    if (snap.brokersTotal > 0 && snap.brokersBullish / snap.brokersTotal < 0.3) {
+      warnings.push(`⚠️ Mayoritas broker net sell (${snap.brokersTotal - snap.brokersBullish}/${snap.brokersTotal} broker)`);
+    }
 
+    // FIX A+D: Verdict pakai effectiveScore (confidence-adjusted) bukan raw verdictScore
     let verdict: RecommendationVerdict = 'AVOID';
-    if (verdictScore >= 65 && warnings.length === 0) verdict = 'STRONG BUY';
-    else if (verdictScore >= 50 && warnings.length <= 1) verdict = 'BUY';
-    else if (verdictScore >= 35) verdict = 'WATCH';
-    else if (lr.phase.phase === 'MARKDOWN' || latestDayHasDistribution(agg)) verdict = 'SELL';
+    if (effectiveScore >= 65 && warnings.length === 0) verdict = 'STRONG BUY';
+    else if (effectiveScore >= 50 && warnings.length <= 1) verdict = 'BUY';
+    else if (effectiveScore >= 35) verdict = 'WATCH';
+    else if (snap.phase.phase === 'MARKDOWN' || latestDayHasDistribution(agg)) verdict = 'SELL';
     else verdict = 'AVOID';
 
     const last5 = getLastNDailyCandles(agg.rows, 5);
@@ -114,13 +134,13 @@ export function buildRecommendations(data: ProcessedData[]): StockRecommendation
       stock,
       latestClose: close,
       latestDate: lr.raw.date,
-      totalScore: verdictScore,
+      totalScore: effectiveScore,        // FIX A: unified score
       grade,
       signal,
-      phase: lr.phase.phase,
-      wyckoffStage: lr.phase.wyckoffStage,
-      phaseScore: lr.phase.phaseScore,
-      phaseConfidence: lr.phase.confidence,
+      phase: snap.phase.phase,
+      wyckoffStage: snap.phase.wyckoffStage,
+      phaseScore: snap.phase.phaseScore,
+      phaseConfidence: wyckoffConfidence,
       behaviorLabel: getStockBehaviorSummary(agg),
       cumulativeNetBuy: topNetBuy,
       topBrokerNetAccum: topNetBuy,
@@ -133,8 +153,8 @@ export function buildRecommendations(data: ProcessedData[]): StockRecommendation
       distributionDays: agg.distributionDays,
       estimateStatus,
       pricePhase: lr.price.pricePhase,
-      candleStrength: lr.price.candleStrength,
-      verdictScore,
+      candleStrength: snap.avgCandleStrength,   // FIX C: rata-rata semua broker
+      verdictScore: effectiveScore,
       verdict,
       entryLow,
       entryHigh,

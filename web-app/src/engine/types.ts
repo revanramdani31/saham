@@ -114,10 +114,24 @@ export interface PhaseDetectorResult {
   volTrend: string;
   netTrend: string;
   phaseScore: number;
+  /** Fase terkonfirmasi (mempertimbangkan MTF bila data cukup) */
   phase: string;
+  /** Fase murni dari candle harian */
+  dailyPhase: string;
+  weeklyPhase: string;
+  monthlyPhase: string;
   wyckoffStage: string;
   confidence: number;
   action: string;
+  vsaSignal: string;
+  vsaSignals: string;
+  wyckoffEvent: string;
+  eventDetail: string;
+  mtfAlignment: string;
+  mtfScore: number;
+  mtfDetail: string;
+  candleCount: number;
+  dataQuality: string;
 }
 
 export interface ScoringEngineResult {

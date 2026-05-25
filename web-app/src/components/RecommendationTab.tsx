@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import type { ProcessedData } from '../engine/types';
 import {
   TrendingUp, TrendingDown, Target, AlertTriangle,
@@ -7,6 +7,8 @@ import {
 } from 'lucide-react';
 import { formatCompact, formatPrice } from '../utils/format';
 import { buildRecommendations, type StockRecommendation } from '../engine/recommendations';
+import { DEFAULT_WEIGHTS, type ScoringWeights } from '../engine/adaptiveScoring';
+import { loadScoringWeights } from '../utils/adaptiveWeightsStorage';
 
 interface RecommendationTabProps {
   data: ProcessedData[];
@@ -117,7 +119,14 @@ function TradingPlanCard({ rec }: { rec: StockRecommendation }) {
         </div>
         <div style={{ textAlign: 'right' }}>
           <div style={{ fontSize: '2rem', fontWeight: 800, color: cfg.color, lineHeight: 1 }}>{rec.verdictScore}</div>
-          <div style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', textTransform: 'uppercase' }}>Verdict Score</div>
+          <div style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', textTransform: 'uppercase' }}>
+            Confidence-Adj Score
+          </div>
+          <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: '2px' }}>
+            Wyckoff: <strong style={{ color: rec.phaseConfidence >= 50 ? '#3FB950' : rec.phaseConfidence >= 30 ? '#D29922' : '#F85149' }}>
+              {rec.phaseConfidence}%
+            </strong>
+          </div>
         </div>
       </div>
 
@@ -263,7 +272,18 @@ function TpItem({ label, price, rr, entryMid, color, capital }: { label: string;
 }
 
 export function RecommendationTab({ data }: RecommendationTabProps) {
-  const recommendations = useMemo(() => buildRecommendations(data), [data]);
+  const [scoringWeights, setScoringWeights] = useState<ScoringWeights>(DEFAULT_WEIGHTS);
+
+  useEffect(() => {
+    loadScoringWeights().then((w) => {
+      if (w) setScoringWeights(w);
+    });
+  }, []);
+
+  const recommendations = useMemo(
+    () => buildRecommendations(data, scoringWeights),
+    [data, scoringWeights]
+  );
   const [filter, setFilter] = useState<'ALL' | 'STRONG BUY' | 'BUY' | 'WATCH' | 'AVOID'>('ALL');
   const [expandedStock, setExpandedStock] = useState<string | null>(null);
 

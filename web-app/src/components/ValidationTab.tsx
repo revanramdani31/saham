@@ -16,8 +16,10 @@ import {
 } from '../utils/validationStorage';
 import {
   ClipboardCheck, CheckCircle, XCircle, Clock, HelpCircle,
-  TrendingUp, Filter, Trash2
+  TrendingUp, Filter, Trash2, Sparkles
 } from 'lucide-react';
+import { calibrateWeightsFromValidation } from '../engine/adaptiveScoring';
+import { saveScoringWeights } from '../utils/adaptiveWeightsStorage';
 import {
   BarChart,
   Bar,
@@ -71,6 +73,21 @@ export function ValidationTab({ data }: ValidationTabProps) {
   const [manualMap, setManualMap] = useState<Record<string, ManualValidationEntry>>({});
   const [filter, setFilter] = useState<OutcomeFilter>('ALL');
   const [verdictFilter, setVerdictFilter] = useState<string>('ALL');
+  const [calibrateMsg, setCalibrateMsg] = useState<string>('');
+
+  const handleCalibrateWeights = async () => {
+    const weights = calibrateWeightsFromValidation(records, getFinalOutcome);
+    await saveScoringWeights(weights);
+    if (weights.sampleSize < 20) {
+      setCalibrateMsg(
+        `Bobot default dipakai — butuh ≥20 sampel Benar/Salah (saat ini: ${weights.sampleSize}).`
+      );
+    } else {
+      setCalibrateMsg(
+        `Bobot dikalibrasi dari ${weights.sampleSize} sampel. Buka tab Rekomendasi untuk melihat skor terbaru.`
+      );
+    }
+  };
 
   useEffect(() => {
     loadManualValidations().then(setManualMap);
@@ -218,6 +235,19 @@ export function ValidationTab({ data }: ValidationTabProps) {
           ≤ threshold gagal. <strong>Jual (SELL / AVOID):</strong> kebalikannya.{' '}
           <strong>WATCH</strong> biasanya netral.
         </p>
+        <div className="flex items-center gap-3 mt-4 flex-wrap">
+          <button
+            type="button"
+            className="btn btn-primary flex items-center gap-2"
+            style={{ fontSize: '0.8rem' }}
+            onClick={handleCalibrateWeights}
+          >
+            <Sparkles size={16} /> Kalibrasi bobot skor dari validasi
+          </button>
+          {calibrateMsg && (
+            <span className="text-xs text-secondary">{calibrateMsg}</span>
+          )}
+        </div>
       </div>
 
       {/* KPI */}

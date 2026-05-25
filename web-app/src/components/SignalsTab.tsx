@@ -136,6 +136,7 @@ export function SignalsTab({ data }: SignalsTabProps) {
         <div className="flex items-center gap-2 mb-4">
           <Radio className="text-purple" size={20} />
           <h3 className="font-semibold">Log Sinyal Otomatis</h3>
+          <span className="text-xs text-secondary ml-2">(Score = Confidence-Adjusted Stock Score)</span>
         </div>
         <div className="table-container" style={{ maxHeight: '400px', overflowY: 'auto' }}>
           <table>

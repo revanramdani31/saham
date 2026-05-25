@@ -1,5 +1,8 @@
 import type { RawTradeData, ProcessedData, BrokerFlowResult, PriceActionResult, VolumeAnalyzerResult, BrokerBehaviorResult, PhaseDetectorResult, ScoringEngineResult, StockSummary, BrokerSummary, DailyStockTotals } from './types';
 import { buildStockAggregates, computeStockLevelScore } from './stockAggregation';
+import { buildDailyBars } from './timeframeAggregation';
+import { analyzeMultiTimeframe } from './multiTimeframe';
+import { MIN_CANDLES_GOOD } from './wyckoffDetector';
 
 /**
  * Helper type for the pre-calculated daily totals lookup map.
@@ -10,6 +13,7 @@ type DailyTotalsMap = Map<string, DailyStockTotals>;
 export class BandarmologiEngine {
   private rawData: RawTradeData[];
   private dailyTotalsMap: DailyTotalsMap = new Map();
+  private phaseMap: Map<string, PhaseDetectorResult> = new Map();
 
   constructor(data: RawTradeData[]) {
     // Sort data chronologically
@@ -102,6 +106,7 @@ export class BandarmologiEngine {
   public processAll(): ProcessedData[] {
     // FIX #1: Pre-calculate all daily totals BEFORE processing rows
     this.precalculateDailyTotals();
+    this.precalculateWyckoffPhases();
 
     const results: ProcessedData[] = [];
 
@@ -130,6 +135,63 @@ export class BandarmologiEngine {
     this.applyRanks(results);
 
     return results;
+  }
+
+  /**
+   * Wyckoff + VSA + multi-timeframe (D/W/M) per saham & tanggal.
+   */
+  private precalculateWyckoffPhases(): void {
+    this.phaseMap.clear();
+    const stocks = [...new Set(this.rawData.map((r) => r.stock))];
+
+    for (const stock of stocks) {
+      const dailyBars = buildDailyBars(this.rawData, stock, (d, s) =>
+        this.getDailyTotals(d, s)
+      );
+      const dates = [...new Set(dailyBars.map((b) => b.date))].sort();
+
+      for (const date of dates) {
+        const mtf = analyzeMultiTimeframe(dailyBars, date);
+        const d = mtf.daily;
+        const bar = dailyBars.find((b) => b.date === date);
+
+        let confidence = d.confidence;
+        if (mtf.alignment === 'STRONG') confidence = Math.min(100, confidence + 15);
+        else if (mtf.alignment === 'ALIGNED') confidence = Math.min(100, confidence + 8);
+        else if (mtf.alignment === 'CONFLICT') confidence = Math.max(15, confidence - 20);
+        else if (mtf.alignment === 'INSUFFICIENT') confidence = Math.max(10, Math.round(confidence * 0.6));
+
+        const key = `${stock}|${date}`;
+        this.phaseMap.set(key, {
+          date,
+          stock,
+          close: bar?.close ?? 0,
+          volRatio: 0,
+          netBuyAgg: bar?.netBuy ?? 0,
+          behavior: '',
+          priceTrend: '',
+          volTrend: '',
+          netTrend: (bar?.netBuy ?? 0) > 0 ? 'BELI' : 'JUAL',
+          phaseScore: d.phaseScore,
+          phase: mtf.confirmedPhase,
+          dailyPhase: d.phase,
+          weeklyPhase: mtf.weekly.phase,
+          monthlyPhase: mtf.monthly.phase,
+          wyckoffStage: d.wyckoffStage,
+          confidence,
+          action: d.action,
+          vsaSignal: d.vsaSignal,
+          vsaSignals: d.vsaSignals.join(' | '),
+          wyckoffEvent: d.wyckoffEvent,
+          eventDetail: d.eventDetail,
+          mtfAlignment: mtf.alignment,
+          mtfScore: mtf.alignmentScore,
+          mtfDetail: mtf.alignmentDetail,
+          candleCount: d.candleCount,
+          dataQuality: d.dataQuality,
+        });
+      }
+    }
   }
 
   private getPrevClose(row: RawTradeData, historicalData: RawTradeData[]): number {
@@ -320,41 +382,58 @@ export class BandarmologiEngine {
     };
   }
 
-  private calculatePhaseDetector(row: RawTradeData, price: PriceActionResult, vol: VolumeAnalyzerResult, behavior: BrokerBehaviorResult, netBuyAgg: number): PhaseDetectorResult {
-    const priceTrendPts = price.trend === "NAIK" ? 2 : (price.trend === "TURUN" ? -2 : 0);
-    const volTrendPts = vol.volTrend === "NAIK" ? 1 : 0;
-    const netTrend = netBuyAgg > 0 ? "BELI" : "JUAL";
-    const netTrendPts = netTrend === "BELI" ? 3 : -3;
-    const volRatioPts = vol.volRatio > 1.5 ? 2 : 0;
+  private calculatePhaseDetector(
+    row: RawTradeData,
+    price: PriceActionResult,
+    vol: VolumeAnalyzerResult,
+    behavior: BrokerBehaviorResult,
+    netBuyAgg: number
+  ): PhaseDetectorResult {
+    const key = `${row.stock}|${row.date}`;
+    const cached = this.phaseMap.get(key);
+    const netTrend = netBuyAgg > 0 ? 'BELI' : 'JUAL';
 
-    const phaseScore = priceTrendPts + volTrendPts + netTrendPts + volRatioPts;
+    if (cached) {
+      return {
+        ...cached,
+        close: row.close,
+        volRatio: vol.volRatio,
+        netBuyAgg,
+        behavior: behavior.behaviorLabel,
+        priceTrend: price.trend,
+        volTrend: vol.volTrend,
+        netTrend,
+      };
+    }
 
-    let phase = "SIDEWAYS";
-    if (phaseScore >= 5) phase = "MARKUP";
-    else if (phaseScore >= 2) phase = "ACCUMULATION";
-    else if (phaseScore >= -1) phase = "SIDEWAYS";
-    else if (phaseScore >= -4) phase = "DISTRIBUTION";
-    else phase = "MARKDOWN";
-
-    let wyckoffStage = "Phase B - Sideways";
-    if (phase === "MARKUP") wyckoffStage = "Phase C/D - Markup";
-    else if (phase === "ACCUMULATION") wyckoffStage = "Phase A/B - Accumulation";
-    else if (phase === "DISTRIBUTION") wyckoffStage = "Phase A/B - Distribution";
-    else if (phase === "MARKDOWN") wyckoffStage = "Phase C/D - Markdown";
-
-    const confidence = Math.min(100, Math.max(20, Math.abs(phaseScore) * 20));
-
-    let action = "WATCH";
-    if (phase === "MARKUP") action = "BUY/HOLD";
-    else if (phase === "ACCUMULATION") action = "ACCUMULATE";
-    else if (phase === "DISTRIBUTION") action = "REDUCE/SELL";
-    else if (phase === "MARKDOWN") action = "AVOID";
-
+    // Fallback jika cache miss
     return {
-      date: row.date, stock: row.stock, close: row.close,
-      volRatio: vol.volRatio, netBuyAgg, behavior: behavior.behaviorLabel,
-      priceTrend: price.trend, volTrend: vol.volTrend, netTrend,
-      phaseScore, phase, wyckoffStage, confidence, action
+      date: row.date,
+      stock: row.stock,
+      close: row.close,
+      volRatio: vol.volRatio,
+      netBuyAgg,
+      behavior: behavior.behaviorLabel,
+      priceTrend: price.trend,
+      volTrend: vol.volTrend,
+      netTrend,
+      phaseScore: 0,
+      phase: 'SIDEWAYS',
+      dailyPhase: 'SIDEWAYS',
+      weeklyPhase: 'SIDEWAYS',
+      monthlyPhase: 'SIDEWAYS',
+      wyckoffStage: 'Phase B - Sideways',
+      confidence: 20,
+      action: 'WATCH',
+      vsaSignal: '—',
+      vsaSignals: '',
+      wyckoffEvent: 'NONE',
+      eventDetail: '',
+      mtfAlignment: 'INSUFFICIENT',
+      mtfScore: 0,
+      mtfDetail: `Minimal ${MIN_CANDLES_GOOD} candle harian diperlukan`,
+      candleCount: 0,
+      dataQuality: 'INSUFFICIENT',
     };
   }
 
@@ -413,7 +492,8 @@ export class BandarmologiEngine {
     const ranked = Array.from(aggregates.entries())
       .map(([stock, agg]) => ({
         stock,
-        score: computeStockLevelScore(agg).verdictScore,
+        // FIX A: Unified scoring
+        score: computeStockLevelScore(agg).confidenceAdjustedScore,
       }))
       .sort((a, b) => b.score - a.score);
 
@@ -430,12 +510,14 @@ export class BandarmologiEngine {
     const summaries: StockSummary[] = [];
 
     aggregates.forEach((agg) => {
-      const { verdictScore, grade, signal } = computeStockLevelScore(agg);
+      // FIX A: Unified scoring — pakai confidenceAdjustedScore
+      const { confidenceAdjustedScore, grade, signal } = computeStockLevelScore(agg);
+      const snap = agg.latestSnapshot;
       summaries.push({
         stock: agg.stock,
-        latestDate: agg.latestRow.raw.date,
-        latestScore: verdictScore,
-        latestPhase: agg.latestRow.phase.phase,
+        latestDate: snap.priceRow.raw.date,
+        latestScore: confidenceAdjustedScore,
+        latestPhase: snap.phase.phase,
         latestSignal: signal,
         totalNetBuy: agg.topBrokerNetAccum,
         avgVolRatio: agg.avgVolRatio,
