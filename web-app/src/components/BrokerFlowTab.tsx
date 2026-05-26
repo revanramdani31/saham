@@ -50,6 +50,14 @@ export function BrokerFlowTab({ data }: BrokerFlowTabProps) {
 
   const latest = stockData[stockData.length - 1];
 
+  // Buyer vs seller pressure must use absolute magnitudes.
+  // top3SellerNetBuy is negative by definition (net sell), so convert to absolute pressure.
+  const top3BuyerPressure = latest ? Math.max(0, latest.dailyTotals.top3BuyerNetBuy) : 0;
+  const top3SellerPressure = latest ? Math.max(0, Math.abs(latest.dailyTotals.top3SellerNetBuy)) : 0;
+  const totalTop3Pressure = top3BuyerPressure + top3SellerPressure;
+  const top3BuyerRatio = totalTop3Pressure === 0 ? 0 : (top3BuyerPressure / totalTop3Pressure) * 100;
+  const top3SellerRatio = totalTop3Pressure === 0 ? 0 : (top3SellerPressure / totalTop3Pressure) * 100;
+
   const formatNum = (n: number) => formatCompact(n);
 
   if (!selectedStock) {
@@ -65,9 +73,9 @@ export function BrokerFlowTab({ data }: BrokerFlowTabProps) {
         </div>
         <div className="flex items-center gap-2">
           <label className="text-sm text-secondary font-semibold">Pilih Saham:</label>
-          <select 
-            className="input-field" 
-            value={selectedStock} 
+          <select
+            className="input-field"
+            value={selectedStock}
             onChange={e => setSelectedStock(e.target.value)}
             style={{ width: '150px' }}
           >
@@ -110,17 +118,17 @@ export function BrokerFlowTab({ data }: BrokerFlowTabProps) {
             </h3>
             <div className="mt-2">
               <div className="flex justify-between text-xs mb-1">
-                <span className="text-green">Buyer ({formatCompact(latest.dailyTotals.top3BuyerNetBuy)})</span>
-                <span className="text-red">Seller ({formatCompact(latest.dailyTotals.top3SellerNetBuy)})</span>
+                <span className="text-green">Buyer ({formatCompact(top3BuyerPressure)})</span>
+                <span className="text-red">Seller ({formatCompact(top3SellerPressure)})</span>
               </div>
               <div className="w-full h-3 bg-[var(--bg-tertiary)] rounded-full overflow-hidden flex">
-                <div 
-                  className="h-full bg-green" 
-                  style={{ width: `${(latest.dailyTotals.top3BuyerNetBuy / (latest.dailyTotals.top3BuyerNetBuy + latest.dailyTotals.top3SellerNetBuy)) * 100}%` }}
+                <div
+                  className="h-full bg-green"
+                  style={{ width: `${top3BuyerRatio}%` }}
                 />
-                <div 
-                  className="h-full bg-red" 
-                  style={{ width: `${(latest.dailyTotals.top3SellerNetBuy / (latest.dailyTotals.top3BuyerNetBuy + latest.dailyTotals.top3SellerNetBuy)) * 100}%` }}
+                <div
+                  className="h-full bg-red"
+                  style={{ width: `${top3SellerRatio}%` }}
                 />
               </div>
               <p className="text-xs text-secondary mt-5 text-center">
@@ -151,10 +159,10 @@ export function BrokerFlowTab({ data }: BrokerFlowTabProps) {
                       <PieCell fill="#2EA043" />
                       <PieCell fill="#2D3139" />
                     </Pie>
-                    <Tooltip 
-                      contentStyle={{ backgroundColor: '#161B22', borderColor: '#30363D', borderRadius: '8px', fontSize: '0.75rem' }} 
-                      itemStyle={{ color: '#E6EDF3' }} 
-                      formatter={(val: any) => `${Number(val).toFixed(1)}%`} 
+                    <Tooltip
+                      contentStyle={{ backgroundColor: '#161B22', borderColor: '#30363D', borderRadius: '8px', fontSize: '0.75rem' }}
+                      itemStyle={{ color: '#E6EDF3' }}
+                      formatter={(val: any) => `${Number(val).toFixed(1)}%`}
                     />
                   </PieChart>
                 </ResponsiveContainer>
@@ -188,7 +196,7 @@ export function BrokerFlowTab({ data }: BrokerFlowTabProps) {
               <CartesianGrid strokeDasharray="3 3" stroke="#2D3139" />
               <XAxis dataKey="date" stroke="#8B949E" fontSize={12} />
               <YAxis stroke="#8B949E" fontSize={12} tickFormatter={(val) => formatCompact(val)} />
-              <Tooltip 
+              <Tooltip
                 contentStyle={{ backgroundColor: '#161B22', borderColor: '#30363D', borderRadius: '8px' }}
                 itemStyle={{ color: '#E6EDF3' }}
                 formatter={(value: any, name: any) => [formatCompact(value), name === 'netBuy' ? 'Net Buy Harian' : 'Akumulasi Total']}

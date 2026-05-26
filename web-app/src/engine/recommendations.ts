@@ -1,6 +1,7 @@
 import type { ProcessedData } from './types';
 import type { ScoringWeights } from './adaptiveScoring';
 import { DEFAULT_WEIGHTS } from './adaptiveScoring';
+import type { MarketRegime } from './marketRegime';
 import {
   buildStockAggregates,
   computeStockLevelScore,
@@ -47,6 +48,7 @@ export interface StockRecommendation {
   tp1RR: number;
   tp2RR: number;
   tp3RR: number;
+  marketRegime: MarketRegime;
   scoreBreakdown: {
     brokerFlow: number;
     volume: number;
@@ -57,9 +59,46 @@ export interface StockRecommendation {
   warnings: string[];
 }
 
+function adjustVerdictByMarket(
+  verdict: RecommendationVerdict,
+  phase: string,
+  marketRegime: MarketRegime,
+  warnings: string[]
+): RecommendationVerdict {
+  if (marketRegime.ihsgPhase === 'BULL') {
+    if (verdict === 'WATCH' && phase === 'ACCUMULATION') return 'BUY';
+    return verdict;
+  }
+
+  if (marketRegime.ihsgPhase === 'BEAR') {
+    if (phase === 'MARKUP') {
+      warnings.push('⚠️ IHSG BEAR: markup ini perlu verifikasi ekstra (potensi false breakout / manipulasi)');
+      if (verdict === 'STRONG BUY') return 'BUY';
+      if (verdict === 'BUY') return 'WATCH';
+      return verdict;
+    }
+
+    if (phase === 'ACCUMULATION' && (verdict === 'STRONG BUY' || verdict === 'BUY')) {
+      warnings.push('⚠️ IHSG BEAR: akumulasi cenderung diperlakukan sebagai watchlist sampai market membaik');
+      return 'WATCH';
+    }
+  }
+
+  return verdict;
+}
+
 export function buildRecommendations(
   data: ProcessedData[],
-  weights: ScoringWeights = DEFAULT_WEIGHTS
+  weights: ScoringWeights = DEFAULT_WEIGHTS,
+  marketRegime: MarketRegime = {
+    ihsgPhase: 'SIDEWAYS',
+    ihsgTrend: 'FLAT',
+    sectorRotation: 'N/A',
+    foreignFlow: 'NEUTRAL',
+    fearGreedIndex: 50,
+    commentary: 'Belum ada market regime.',
+    source: 'proxy',
+  }
 ): StockRecommendation[] {
   const aggregates = buildStockAggregates(data);
   const results: StockRecommendation[] = [];
@@ -104,6 +143,14 @@ export function buildRecommendations(
       warnings.push(`⚠️ Mayoritas broker net sell (${snap.brokersTotal - snap.brokersBullish}/${snap.brokersTotal} broker)`);
     }
 
+    if (marketRegime.ihsgPhase === 'BEAR' && snap.phase.phase === 'MARKUP') {
+      warnings.push('⚠️ Market bear vs markup: sinyal bisa lebih berisiko / tidak sustainable');
+    }
+
+    if (marketRegime.ihsgPhase === 'BULL' && snap.phase.phase === 'ACCUMULATION') {
+      warnings.push('✅ Market bull mendukung akumulasi');
+    }
+
     // FIX A+D: Verdict pakai effectiveScore (confidence-adjusted) bukan raw verdictScore
     let verdict: RecommendationVerdict = 'AVOID';
     if (effectiveScore >= 65 && warnings.length === 0) verdict = 'STRONG BUY';
@@ -111,6 +158,8 @@ export function buildRecommendations(
     else if (effectiveScore >= 35) verdict = 'WATCH';
     else if (snap.phase.phase === 'MARKDOWN' || latestDayHasDistribution(agg)) verdict = 'SELL';
     else verdict = 'AVOID';
+
+    verdict = adjustVerdictByMarket(verdict, snap.phase.phase, marketRegime, warnings);
 
     const last5 = getLastNDailyCandles(agg.rows, 5);
     const candleCount = Math.max(last5.length, 1);
@@ -166,6 +215,7 @@ export function buildRecommendations(
       tp1RR: 1.5,
       tp2RR: 3,
       tp3RR: 5,
+      marketRegime,
       scoreBreakdown,
       warnings,
     });
@@ -178,9 +228,10 @@ export function buildRecommendations(
 export function buildRecommendationAsOf(
   data: ProcessedData[],
   stock: string,
-  asOfDate: string
+  asOfDate: string,
+  marketRegime?: MarketRegime
 ): StockRecommendation | null {
   const subset = data.filter((r) => r.raw.stock === stock && r.raw.date <= asOfDate);
   if (subset.length === 0) return null;
-  return buildRecommendations(subset).find((r) => r.stock === stock) ?? null;
+  return buildRecommendations(subset, DEFAULT_WEIGHTS, marketRegime).find((r) => r.stock === stock) ?? null;
 }

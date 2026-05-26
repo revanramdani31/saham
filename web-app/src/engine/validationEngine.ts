@@ -5,6 +5,7 @@ import {
 } from './recommendations';
 
 export type ValidationOutcome = 'BENAR' | 'SALAH' | 'NETRAL' | 'MENUNGGU';
+export type TpSlValidationMode = 'WINDOW_ANY_TOUCH' | 'FIRST_TOUCH_CONSERVATIVE';
 
 export interface ValidationOptions {
   /** Jumlah sesi trading ke depan untuk cek harga */
@@ -13,12 +14,19 @@ export interface ValidationOptions {
   successThresholdPct: number;
   /** Return % dianggap gagal untuk sinyal beli */
   failThresholdPct: number;
+  /**
+   * Mode evaluasi TP/SL:
+   * - WINDOW_ANY_TOUCH: jika pernah tersentuh dalam window, flag true (legacy)
+   * - FIRST_TOUCH_CONSERVATIVE: urutan first-touch; jika TP & SL tersentuh di candle sama, anggap SL dulu (konservatif)
+   */
+  tpSlValidationMode: TpSlValidationMode;
 }
 
 export const DEFAULT_VALIDATION_OPTIONS: ValidationOptions = {
   forwardSessions: 5,
   successThresholdPct: 2,
   failThresholdPct: -2,
+  tpSlValidationMode: 'FIRST_TOUCH_CONSERVATIVE',
 };
 
 export interface ValidationRecord {
@@ -41,9 +49,10 @@ export interface ValidationRecord {
 export function validationRecordId(
   stock: string,
   signalDate: string,
-  forwardSessions: number
+  forwardSessions: number,
+  tpSlValidationMode: TpSlValidationMode
 ): string {
-  return `${stock}|${signalDate}|${forwardSessions}`;
+  return `${stock}|${signalDate}|${forwardSessions}|${tpSlValidationMode}`;
 }
 
 function getDailyCloses(
@@ -98,20 +107,67 @@ function checkTpSlInWindow(
   endIdx: number,
   stopLoss: number,
   tp1: number,
-  verdict: RecommendationVerdict
+  verdict: RecommendationVerdict,
+  tpSlValidationMode: TpSlValidationMode
 ): { tp1Hit: boolean | null; stopLossHit: boolean | null } {
-  if (verdict !== 'STRONG BUY' && verdict !== 'BUY') {
+  if (!isBullishEntryVerdict(verdict)) {
     return { tp1Hit: null, stopLossHit: null };
   }
 
+  if (tpSlValidationMode === 'FIRST_TOUCH_CONSERVATIVE') {
+    return checkTpSlFirstTouchConservative(candles, startIdx, endIdx, stopLoss, tp1);
+  }
+
+  return checkTpSlWindowAnyTouch(candles, startIdx, endIdx, stopLoss, tp1);
+}
+
+function isBullishEntryVerdict(verdict: RecommendationVerdict): boolean {
+  return verdict === 'STRONG BUY' || verdict === 'BUY';
+}
+
+function checkTpSlWindowAnyTouch(
+  candles: { date: string; close: number; high: number; low: number }[],
+  startIdx: number,
+  endIdx: number,
+  stopLoss: number,
+  tp1: number
+): { tp1Hit: boolean; stopLossHit: boolean } {
   let tp1Hit = false;
   let stopLossHit = false;
+
   for (let i = startIdx + 1; i <= endIdx; i++) {
     const c = candles[i];
     if (c.low <= stopLoss) stopLossHit = true;
     if (c.high >= tp1) tp1Hit = true;
   }
+
   return { tp1Hit, stopLossHit };
+}
+
+function checkTpSlFirstTouchConservative(
+  candles: { date: string; close: number; high: number; low: number }[],
+  startIdx: number,
+  endIdx: number,
+  stopLoss: number,
+  tp1: number
+): { tp1Hit: boolean; stopLossHit: boolean } {
+  for (let i = startIdx + 1; i <= endIdx; i++) {
+    const c = candles[i];
+    const hitSl = c.low <= stopLoss;
+    const hitTp = c.high >= tp1;
+
+    if (!hitSl && !hitTp) continue;
+
+    // Konservatif: saat ambiguitas intrabar (TP & SL kena di candle yang sama), asumsikan SL duluan.
+    if (hitSl && hitTp) {
+      return { tp1Hit: false, stopLossHit: true };
+    }
+
+    if (hitSl) return { tp1Hit: false, stopLossHit: true };
+    return { tp1Hit: true, stopLossHit: false };
+  }
+
+  return { tp1Hit: false, stopLossHit: false };
 }
 
 /**
@@ -137,7 +193,12 @@ export function runRecommendationValidation(
       if (!rec) continue;
 
       const futureIdx = i + options.forwardSessions;
-      const id = validationRecordId(stock, signalDate, options.forwardSessions);
+      const id = validationRecordId(
+        stock,
+        signalDate,
+        options.forwardSessions,
+        options.tpSlValidationMode
+      );
 
       if (futureIdx >= candles.length) {
         records.push({
@@ -171,7 +232,8 @@ export function runRecommendationValidation(
         futureIdx,
         rec.stopLoss,
         rec.tp1,
-        rec.verdict
+        rec.verdict,
+        options.tpSlValidationMode
       );
 
       records.push({

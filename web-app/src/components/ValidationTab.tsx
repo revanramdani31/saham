@@ -179,7 +179,7 @@ export function ValidationTab({ data }: ValidationTabProps) {
         <h3 className="font-semibold mb-4 text-sm" style={{ color: 'var(--text-secondary)' }}>
           PENGATURAN BACKTEST
         </h3>
-        <div className="grid grid-cols-3 gap-4">
+        <div className="grid grid-cols-4 gap-4">
           <div>
             <label className="text-xs text-secondary block mb-1">Sesi ke depan</label>
             <select
@@ -229,11 +229,31 @@ export function ValidationTab({ data }: ValidationTabProps) {
               }
             />
           </div>
+          <div>
+            <label className="text-xs text-secondary block mb-1">Mode TP/SL</label>
+            <select
+              className="input-field"
+              value={options.tpSlValidationMode}
+              onChange={(e) =>
+                setOptions((o) => ({
+                  ...o,
+                  tpSlValidationMode: e.target.value as ValidationOptions['tpSlValidationMode'],
+                }))
+              }
+            >
+              <option value="FIRST_TOUCH_CONSERVATIVE">First-touch konservatif (disarankan)</option>
+              <option value="WINDOW_ANY_TOUCH">Window any-touch (legacy)</option>
+            </select>
+          </div>
         </div>
         <p className="text-xs text-secondary mt-3">
           <strong>Beli (STRONG BUY / BUY):</strong> benar jika return ≥ threshold sukses; salah jika
           ≤ threshold gagal. <strong>Jual (SELL / AVOID):</strong> kebalikannya.{' '}
           <strong>WATCH</strong> biasanya netral.
+        </p>
+        <p className="text-xs text-secondary mt-2">
+          <strong>Mode TP/SL konservatif:</strong> evaluasi berdasarkan urutan first-touch. Jika TP dan SL
+          tersentuh di candle yang sama, sistem menganggap <strong>SL tercapai lebih dulu</strong>.
         </p>
         <div className="flex items-center gap-3 mt-4 flex-wrap">
           <button
@@ -306,7 +326,7 @@ export function ValidationTab({ data }: ValidationTabProps) {
                 <CartesianGrid strokeDasharray="3 3" stroke="#2D3139" vertical={false} />
                 <XAxis dataKey="name" stroke="#8B949E" fontSize={12} />
                 <YAxis stroke="#8B949E" fontSize={12} allowDecimals={false} />
-                <Tooltip 
+                <Tooltip
                   contentStyle={{ backgroundColor: '#161B22', borderColor: '#30363D', borderRadius: '8px' }}
                   itemStyle={{ color: '#E6EDF3' }}
                 />

@@ -9,24 +9,27 @@ import { formatCompact, formatPrice } from '../utils/format';
 import { buildRecommendations, type StockRecommendation } from '../engine/recommendations';
 import { DEFAULT_WEIGHTS, type ScoringWeights } from '../engine/adaptiveScoring';
 import { loadScoringWeights } from '../utils/adaptiveWeightsStorage';
+import { detectMarketRegime } from '../engine/marketRegime';
+import type { MarketContext } from '../engine/marketContext';
 
 interface RecommendationTabProps {
   data: ProcessedData[];
+  marketContext?: MarketContext;
 }
 
 const VERDICT_CONFIG = {
   'STRONG BUY': { color: '#3FB950', bg: 'rgba(46,160,67,0.15)', border: 'rgba(46,160,67,0.4)', icon: CheckCircle, label: 'STRONG BUY', emoji: '🚀' },
-  'BUY':        { color: '#58A6FF', bg: 'rgba(56,139,253,0.12)', border: 'rgba(56,139,253,0.35)', icon: TrendingUp, label: 'BUY', emoji: '✅' },
-  'WATCH':      { color: '#D29922', bg: 'rgba(210,153,34,0.12)', border: 'rgba(210,153,34,0.35)', icon: Activity, label: 'WATCH', emoji: '👀' },
-  'AVOID':      { color: '#F85149', bg: 'rgba(218,54,51,0.12)', border: 'rgba(218,54,51,0.3)', icon: XCircle, label: 'AVOID', emoji: '🚫' },
-  'SELL':       { color: '#F85149', bg: 'rgba(218,54,51,0.15)', border: 'rgba(218,54,51,0.4)', icon: TrendingDown, label: 'SELL / EXIT', emoji: '🔴' },
+  'BUY': { color: '#58A6FF', bg: 'rgba(56,139,253,0.12)', border: 'rgba(56,139,253,0.35)', icon: TrendingUp, label: 'BUY', emoji: '✅' },
+  'WATCH': { color: '#D29922', bg: 'rgba(210,153,34,0.12)', border: 'rgba(210,153,34,0.35)', icon: Activity, label: 'WATCH', emoji: '👀' },
+  'AVOID': { color: '#F85149', bg: 'rgba(218,54,51,0.12)', border: 'rgba(218,54,51,0.3)', icon: XCircle, label: 'AVOID', emoji: '🚫' },
+  'SELL': { color: '#F85149', bg: 'rgba(218,54,51,0.15)', border: 'rgba(218,54,51,0.4)', icon: TrendingDown, label: 'SELL / EXIT', emoji: '🔴' },
 };
 
 function ScoreBar({ label, value, max, color, isBiDirectional, tooltip }: { label: string; value: number; max: number; color: string; isBiDirectional?: boolean; tooltip?: string }) {
   const signedMax = Math.max(max, 1);
   const displayVal = Number.isInteger(value) ? value : value.toFixed(1);
   const barColor = value < 0 ? '#F85149' : value === 0 ? '#8B949E' : color;
-  
+
   let left = '0%';
   let width = '0%';
 
@@ -62,14 +65,14 @@ function ScoreBar({ label, value, max, color, isBiDirectional, tooltip }: { labe
         {isBiDirectional && (
           <div style={{ position: 'absolute', left: '50%', top: 0, bottom: 0, width: '1px', background: 'var(--text-secondary)', zIndex: 1, opacity: 0.5 }} />
         )}
-        <div style={{ 
-          position: 'absolute', 
-          height: '100%', 
-          left, 
-          width, 
-          background: barColor, 
-          borderRadius: '4px', 
-          transition: 'all 0.6s ease' 
+        <div style={{
+          position: 'absolute',
+          height: '100%',
+          left,
+          width,
+          background: barColor,
+          borderRadius: '4px',
+          transition: 'all 0.6s ease'
         }} />
       </div>
     </div>
@@ -87,6 +90,15 @@ function VerdictBadge({ verdict }: { verdict: StockRecommendation['verdict'] }) 
     }}>
       {cfg.emoji} {cfg.label}
     </span>
+  );
+}
+
+function RegimeChip({ label, value, color }: { label: string; value: string; color: string }) {
+  return (
+    <div style={{ padding: '7px 10px', background: 'rgba(255,255,255,0.03)', borderRadius: '999px', border: `1px solid ${color}33`, display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+      <div style={{ fontSize: '0.62rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</div>
+      <div style={{ fontSize: '0.75rem', fontWeight: 700, color }}>{value}</div>
+    </div>
   );
 }
 
@@ -146,20 +158,20 @@ function TradingPlanCard({ rec }: { rec: StockRecommendation }) {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px', marginBottom: '14px' }}>
         <MetricChip label="Phase" value={rec.phase} color={
           rec.phase === 'MARKUP' || rec.phase === 'ACCUMULATION' ? '#3FB950' :
-          rec.phase === 'SIDEWAYS' ? '#D29922' : '#F85149'
+            rec.phase === 'SIDEWAYS' ? '#D29922' : '#F85149'
         } />
         <MetricChip label="Wyckoff" value={rec.wyckoffStage.split(' - ')[1] || rec.wyckoffStage} color="#6E40C9" />
         <MetricChip label="Behavior" value={rec.behaviorLabel || 'NETRAL'} color={
           /AKUMULASI|ABSORPSI|Absorpsi|Markup|BOW|BULLISH|POSITIF/i.test(rec.behaviorLabel) ? '#3FB950' :
-          /DISTRIBUSI|Distribusi|Markdown|SOS|BEARISH|NEGATIF/i.test(rec.behaviorLabel) ? '#F85149' : '#D29922'
+            /DISTRIBUSI|Distribusi|Markdown|SOS|BEARISH|NEGATIF/i.test(rec.behaviorLabel) ? '#F85149' : '#D29922'
         } />
         <MetricChip label="Broker Flow" value={rec.brokerFlowSignal} color={
           rec.brokerFlowSignal === 'AKUMULASI' ? '#3FB950' :
-          rec.brokerFlowSignal === 'DISTRIBUSI' ? '#F85149' : '#8B949E'
+            rec.brokerFlowSignal === 'DISTRIBUSI' ? '#F85149' : '#8B949E'
         } />
         <MetricChip label="Status Bandar" value={rec.estimateStatus} color={
           rec.estimateStatus.includes('ACCUMULATION') ? '#3FB950' :
-          rec.estimateStatus.includes('DISTRIBUTION') ? '#F85149' : '#D29922'
+            rec.estimateStatus.includes('DISTRIBUTION') ? '#F85149' : '#D29922'
         } />
         <MetricChip label="Vol Ratio" value={`${rec.avgVolRatio.toFixed(2)}x`} color={
           rec.avgVolRatio > 1.5 ? '#3FB950' : rec.avgVolRatio > 1 ? '#D29922' : '#8B949E'
@@ -271,8 +283,9 @@ function TpItem({ label, price, rr, entryMid, color, capital }: { label: string;
   );
 }
 
-export function RecommendationTab({ data }: RecommendationTabProps) {
+export function RecommendationTab({ data, marketContext }: RecommendationTabProps) {
   const [scoringWeights, setScoringWeights] = useState<ScoringWeights>(DEFAULT_WEIGHTS);
+  const marketRegime = useMemo(() => detectMarketRegime(data, marketContext ?? {}), [data, marketContext]);
 
   useEffect(() => {
     loadScoringWeights().then((w) => {
@@ -281,8 +294,8 @@ export function RecommendationTab({ data }: RecommendationTabProps) {
   }, []);
 
   const recommendations = useMemo(
-    () => buildRecommendations(data, scoringWeights),
-    [data, scoringWeights]
+    () => buildRecommendations(data, scoringWeights, marketRegime),
+    [data, scoringWeights, marketRegime]
   );
   const [filter, setFilter] = useState<'ALL' | 'STRONG BUY' | 'BUY' | 'WATCH' | 'AVOID'>('ALL');
   const [expandedStock, setExpandedStock] = useState<string | null>(null);
@@ -319,6 +332,15 @@ export function RecommendationTab({ data }: RecommendationTabProps) {
         <p className="text-secondary text-sm">
           Kesimpulan komprehensif dari seluruh analisa — Broker Flow, Volume, Wyckoff Phase, Behavior, Price Action — untuk menentukan kelayakan beli saham beserta trading plan lengkap.
         </p>
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '12px' }}>
+          <RegimeChip label="IHSG Phase" value={marketRegime.ihsgPhase} color={marketRegime.ihsgPhase === 'BULL' ? '#3FB950' : marketRegime.ihsgPhase === 'BEAR' ? '#F85149' : '#D29922'} />
+          <RegimeChip label="Trend" value={marketRegime.ihsgTrend} color={marketRegime.ihsgTrend === 'UPTREND' ? '#3FB950' : marketRegime.ihsgTrend === 'DOWNTREND' ? '#F85149' : '#D29922'} />
+          <RegimeChip label="Foreign Flow" value={marketRegime.foreignFlow} color={marketRegime.foreignFlow === 'NET BUY' ? '#3FB950' : marketRegime.foreignFlow === 'NET SELL' ? '#F85149' : '#D29922'} />
+          <RegimeChip label="Fear/Greed" value={`${marketRegime.fearGreedIndex}`} color={marketRegime.fearGreedIndex >= 60 ? '#3FB950' : marketRegime.fearGreedIndex >= 40 ? '#D29922' : '#F85149'} />
+        </div>
+        <div style={{ marginTop: '10px', padding: '10px 12px', borderRadius: '10px', background: 'rgba(56,139,253,0.06)', border: '1px solid rgba(56,139,253,0.2)', color: 'var(--text-secondary)', fontSize: '0.78rem' }}>
+          <strong style={{ color: '#388BFD' }}>Market Context:</strong> {marketRegime.commentary} Sektor terdepan: {marketRegime.sectorRotation}.
+        </div>
       </div>
 
       {/* Summary KPI */}
