@@ -43,6 +43,33 @@ interface WyckoffSpringValidation {
   brokerAbsorption: boolean; // netBuy on spring > 0 (approx. bandar absorption)
 }
 
+interface WyckoffUpthrustValidation {
+  rangeAge: number; // days since range formed
+  volumeOnUpthrust: boolean; // volume on upthrust > avg
+  closeRejection: boolean; // close rejected back below range high
+  subsequentVolume: boolean; // volume after upthrust increased
+  brokerDistribution: boolean; // netBuy on upthrust < 0 (approx. bandar distribution)
+}
+
+interface WyckoffCandidateOptionsBase {
+  bars: OhlcvBar[];
+  last: OhlcvBar;
+  rangeSize: number;
+  avgVol: number;
+  rangeAge: number;
+  MIN_RANGE_AGE: number;
+  VOL_MULT: number;
+  SUBSEQ_VOL_MULT: number;
+}
+
+interface SpringCandidateOptions extends WyckoffCandidateOptionsBase {
+  rangeLow: number;
+}
+
+interface UpthrustCandidateOptions extends WyckoffCandidateOptionsBase {
+  rangeHigh: number;
+}
+
 function avg(values: number[]): number {
   return values.length === 0 ? 0 : values.reduce((a, b) => a + b, 0) / values.length;
 }
@@ -128,15 +155,17 @@ function getWyckoffEventDetailed(bars: OhlcvBar[], rangeHigh: number, rangeLow: 
   );
   const rangeAge = firstExtremeIndex === Infinity ? bars.length : bars.length - firstExtremeIndex;
 
-  const opts = { bars, last, rangeLow, rangeHigh, rangeSize, avgVol, rangeAge, MIN_RANGE_AGE, VOL_MULT, SUBSEQ_VOL_MULT };
+  const baseOpts = { bars, last, rangeSize, avgVol, rangeAge, MIN_RANGE_AGE, VOL_MULT, SUBSEQ_VOL_MULT };
+  const springOpts: SpringCandidateOptions = { ...baseOpts, rangeLow };
+  const upthrustOpts: UpthrustCandidateOptions = { ...baseOpts, rangeHigh };
 
   for (const b of eventCandidates) {
-    const s = evaluateSpringCandidate(b, opts);
+    const s = evaluateSpringCandidate(b, springOpts);
     if (s) return { event: 'SPRING', detail: s };
   }
 
   for (const b of eventCandidates) {
-    const s = evaluateUpthrustCandidate(b, opts);
+    const s = evaluateUpthrustCandidate(b, upthrustOpts);
     if (s) return { event: 'UPTHRUST', detail: s };
   }
 
@@ -260,17 +289,7 @@ function detectPhaseB(bars: OhlcvBar[], rangeHigh: number, rangeLow: number): bo
   return touches >= 4 && rangeAge >= 12;
 }
 
-function evaluateSpringCandidate(b: OhlcvBar, opts: {
-  bars: OhlcvBar[];
-  last: OhlcvBar;
-  rangeLow: number;
-  rangeSize: number;
-  avgVol: number;
-  rangeAge: number;
-  MIN_RANGE_AGE: number;
-  VOL_MULT: number;
-  SUBSEQ_VOL_MULT: number;
-}): string | null {
+function evaluateSpringCandidate(b: OhlcvBar, opts: SpringCandidateOptions): string | null {
   const { bars, last, rangeLow, rangeSize, avgVol, rangeAge, MIN_RANGE_AGE, VOL_MULT, SUBSEQ_VOL_MULT } = opts;
   const threshold = rangeLow - rangeSize * 0.02;
   if (!(b.low < threshold && b.close > rangeLow)) return null;
@@ -294,17 +313,7 @@ function evaluateSpringCandidate(b: OhlcvBar, opts: {
   return null;
 }
 
-function evaluateUpthrustCandidate(b: OhlcvBar, opts: {
-  bars: OhlcvBar[];
-  last: OhlcvBar;
-  rangeHigh: number;
-  rangeSize: number;
-  avgVol: number;
-  rangeAge: number;
-  MIN_RANGE_AGE: number;
-  VOL_MULT: number;
-  SUBSEQ_VOL_MULT: number;
-}): string | null {
+function evaluateUpthrustCandidate(b: OhlcvBar, opts: UpthrustCandidateOptions): string | null {
   const { bars, last, rangeHigh, rangeSize, avgVol, rangeAge, MIN_RANGE_AGE, VOL_MULT, SUBSEQ_VOL_MULT } = opts;
   const threshold = rangeHigh + rangeSize * 0.02;
   if (!(b.high > threshold && b.close < rangeHigh)) return null;
@@ -314,12 +323,12 @@ function evaluateUpthrustCandidate(b: OhlcvBar, opts: {
   const closeRejection = last.close < rangeHigh && last.close < b.close;
   const subsequentVolume = nextBar ? nextBar.volume > b.volume * SUBSEQ_VOL_MULT : false;
   const brokerDistribution = (b.netBuy ?? 0) < 0;
-  const validations = {
+  const validations: WyckoffUpthrustValidation = {
     rangeAge,
-    volumeOnSpring: volumeOnUpthrust,
-    closeRecovery: closeRejection,
+    volumeOnUpthrust,
+    closeRejection,
     subsequentVolume,
-    brokerAbsorption: brokerDistribution,
+    brokerDistribution,
   };
   const supportive = [volumeOnUpthrust, subsequentVolume, brokerDistribution].filter(Boolean).length >= 1;
   if (rangeAge >= MIN_RANGE_AGE && closeRejection && supportive) {

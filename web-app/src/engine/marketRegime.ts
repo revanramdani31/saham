@@ -30,8 +30,13 @@ function signText(value: number): string {
     return value >= 0 ? '+' : '';
 }
 
-function formatCompact(value: number): string {
-    return new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(value);
+function formatMoneyMB(value: number): string {
+    const abs = Math.abs(value);
+    if (abs >= 1e12) return `Rp ${(abs / 1e12).toFixed(2)}T`;
+    if (abs >= 1e9) return `Rp ${(abs / 1e9).toFixed(2)}B`;
+    if (abs >= 1e6) return `Rp ${(abs / 1e6).toFixed(2)}M`;
+    if (abs >= 1e3) return `Rp ${(abs / 1e3).toFixed(2)}K`;
+    return `Rp ${abs.toFixed(0)}`;
 }
 
 function sortByDate<T extends { date: string }>(points: T[]): T[] {
@@ -150,7 +155,7 @@ function deriveSectorRotation(data: ProcessedData[], sectorMap: Record<string, s
     if (ranked.length === 0) return 'UNMAPPED';
 
     return ranked
-        .map((entry) => `${entry.sector} (${entry.netBuy >= 0 ? '+' : ''}${formatCompact(entry.netBuy)})`)
+        .map((entry) => `${entry.sector} (${entry.netBuy >= 0 ? '+' : '-'}${formatMoneyMB(entry.netBuy)})`)
         .join(', ');
 }
 
@@ -196,19 +201,35 @@ function buildEmptyMarketRegime(context: MarketContext, hasRealMarketContext: bo
 
     const ihsg = context.ihsgSeries?.length ? deriveIhsgContext(context.ihsgSeries) : undefined;
     const foreignFlow = context.foreignFlowSeries?.length ? deriveForeignFlow(context.foreignFlowSeries) : 'NEUTRAL';
+
+    let ihsgPhaseScore = 0;
+    if (ihsg?.phase === 'BULL') {
+        ihsgPhaseScore = 18;
+    } else if (ihsg?.phase === 'BEAR') {
+        ihsgPhaseScore = -18;
+    }
+
+    let ihsgTrendScore = 0;
+    if (ihsg?.trend === 'UPTREND') {
+        ihsgTrendScore = 10;
+    } else if (ihsg?.trend === 'DOWNTREND') {
+        ihsgTrendScore = -10;
+    }
+
     let foreignFlowScore = 0;
     if (foreignFlow === 'NET BUY') {
         foreignFlowScore = 8;
     } else if (foreignFlow === 'NET SELL') {
         foreignFlowScore = -8;
     }
+    const fearGreedBase = 50 + ihsgPhaseScore + ihsgTrendScore + foreignFlowScore;
 
     return {
         ihsgPhase: ihsg?.phase ?? 'SIDEWAYS',
         ihsgTrend: ihsg?.trend ?? 'FLAT',
         sectorRotation: 'N/A',
         foreignFlow,
-        fearGreedIndex: clamp(Math.round(50 + foreignFlowScore), 0, 100),
+        fearGreedIndex: clamp(Math.round(fearGreedBase), 0, 100),
         commentary: ihsg?.commentary ?? 'Market context tersedia, tetapi data saham belum dimuat.',
         source: 'real',
     };

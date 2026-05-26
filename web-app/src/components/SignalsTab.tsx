@@ -2,8 +2,7 @@ import { useMemo } from 'react';
 import type { ProcessedData } from '../engine/types';
 import { Grid, Radio } from 'lucide-react';
 import { formatCompact } from '../utils/format';
-import { buildRecommendationAsOf } from '../engine/recommendations';
-
+import { buildRecommendationHistory } from '../engine/recommendations';
 interface SignalsTabProps {
   data: ProcessedData[];
 }
@@ -48,36 +47,37 @@ export function SignalsTab({ data }: Readonly<SignalsTabProps>) {
     stocksArr.forEach(s => {
       mat[s] = {};
       datesArr.forEach(d => {
-        const rec = buildRecommendationAsOf(data, s, d);
-        if (!rec) {
-          mat[s][d] = null;
-          return;
-        }
-
-        const cell: MatrixCell = {
-          signal: rec.signal,
-          score: rec.totalScore,
-          phase: rec.phase,
-          behaviorLabel: rec.behaviorLabel,
-          cumulativeNetBuy: rec.cumulativeNetBuy,
-          absorptionDays: rec.absorptionDays,
-          distributionDays: rec.distributionDays,
-        };
-
-        mat[s][d] = cell;
-        logs.push({
-          date: d,
-          stock: s,
-          score: rec.totalScore,
-          phase: rec.phase,
-          behaviorLabel: rec.behaviorLabel,
-          cumulativeNetBuy: rec.cumulativeNetBuy,
-          signal: rec.signal,
-          absorptionDays: rec.absorptionDays,
-          distributionDays: rec.distributionDays,
-        });
+        mat[s][d] = null;
       });
     });
+
+    const history = buildRecommendationHistory(data);
+
+    for (const log of history) {
+      const rec = log.recommendation;
+      const cell: MatrixCell = {
+        signal: rec.signal,
+        score: rec.totalScore,
+        phase: rec.phase,
+        behaviorLabel: rec.behaviorLabel,
+        cumulativeNetBuy: rec.cumulativeNetBuy,
+        absorptionDays: rec.absorptionDays,
+        distributionDays: rec.distributionDays,
+      };
+
+      mat[log.stock][log.date] = cell;
+      logs.push({
+        date: log.date,
+        stock: log.stock,
+        score: rec.totalScore,
+        phase: rec.phase,
+        behaviorLabel: rec.behaviorLabel,
+        cumulativeNetBuy: rec.cumulativeNetBuy,
+        signal: rec.signal,
+        absorptionDays: rec.absorptionDays,
+        distributionDays: rec.distributionDays,
+      });
+    }
 
     const sortedLogs = [...logs].sort((a, b) => {
       if (a.date !== b.date) {

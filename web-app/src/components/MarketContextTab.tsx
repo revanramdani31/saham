@@ -3,6 +3,17 @@ import Papa from 'papaparse';
 import { Plus, Trash2, LineChart, ArrowDownUp, Layers3, Save, RotateCcw, Upload } from 'lucide-react';
 import type { MarketContext, IhsgSeriesPoint, ForeignFlowPoint } from '../engine/marketContext';
 import { normalizeMarketContext } from '../engine/marketContext';
+import {
+    Area,
+    CartesianGrid,
+    ComposedChart,
+    Line,
+    ResponsiveContainer,
+    Tooltip,
+    XAxis,
+    YAxis,
+} from 'recharts';
+import { NumberInput } from './NumberInput';
 
 interface MarketContextTabProps {
     marketContext: MarketContext | null;
@@ -32,7 +43,7 @@ export function MarketContextTab({ marketContext, onMarketContextUpdated }: Read
     const [ihsgChangePercent, setIhsgChangePercent] = useState('');
 
     const [flowDate, setFlowDate] = useState(new Date().toISOString().split('T')[0]);
-    const [flowNetBuy, setFlowNetBuy] = useState('');
+    const [flowNetBuy, setFlowNetBuy] = useState<number>(0);
 
     const [sectorStock, setSectorStock] = useState('');
     const [sectorName, setSectorName] = useState('');
@@ -40,10 +51,30 @@ export function MarketContextTab({ marketContext, onMarketContextUpdated }: Read
     const ihsgSeries = useMemo(() => sortByDate(marketContext?.ihsgSeries ?? []), [marketContext]);
     const foreignFlowSeries = useMemo(() => sortByDate(marketContext?.foreignFlowSeries ?? []), [marketContext]);
     const sectorMap = marketContext?.sectorMap ?? {};
+    const ihsgChartData = useMemo(() => {
+        return [...ihsgSeries]
+            .reverse()
+            .map((point, index, series) => {
+                const previous = series[index - 1];
+                const changeFromPrevious = previous
+                    ? ((point.close - previous.close) / previous.close) * 100
+                    : point.changePercent;
+
+                return {
+                    ...point,
+                    label: point.date.slice(5),
+                    changeFromPrevious,
+                };
+            });
+    }, [ihsgSeries]);
 
     const latestIhsg = ihsgSeries[0];
     const latestFlow = foreignFlowSeries[0];
     const sectorCount = Object.keys(sectorMap).length;
+    let latestIhsgChangeLabel = '—';
+    if (latestIhsg?.changePercent !== undefined) {
+        latestIhsgChangeLabel = `${latestIhsg.changePercent > 0 ? '+' : ''}${latestIhsg.changePercent.toFixed(2)}%`;
+    }
 
     const saveContext = (next: MarketContext | null) => {
         onMarketContextUpdated(next);
@@ -76,8 +107,8 @@ export function MarketContextTab({ marketContext, onMarketContextUpdated }: Read
     };
 
     const addForeignFlowRow = () => {
-        const netBuy = Number(flowNetBuy);
-        if (!flowDate || !Number.isFinite(netBuy)) return;
+        const netBuy = flowNetBuy;
+        if (!flowDate || !Number.isFinite(netBuy) || netBuy === 0) return;
 
         const nextRow: ForeignFlowPoint = { date: flowDate, netBuy };
         const nextSeries = [...foreignFlowSeries.filter((row) => row.date !== flowDate), nextRow];
@@ -85,7 +116,7 @@ export function MarketContextTab({ marketContext, onMarketContextUpdated }: Read
         nextContext.foreignFlowSeries = nextSeries;
         saveContext(nextContext);
 
-        setFlowNetBuy('');
+        setFlowNetBuy(0);
     };
 
     const addSectorMapRow = () => {
@@ -144,9 +175,12 @@ export function MarketContextTab({ marketContext, onMarketContextUpdated }: Read
             const close = closeRaw ? Number(String(closeRaw).replaceAll(',', '')) : Number.NaN;
             const changePercent = changeRaw !== undefined && changeRaw !== '' ? Number(String(changeRaw).replaceAll(',', '')) : undefined;
             if (!date || !Number.isFinite(close)) return null;
-            return changePercent !== undefined && Number.isFinite(changePercent)
-                ? { date: String(date), close, changePercent }
-                : { date: String(date), close };
+            
+            const point: IhsgSeriesPoint = { date: String(date), close };
+            if (changePercent !== undefined && Number.isFinite(changePercent)) {
+                point.changePercent = changePercent;
+            }
+            return point;
         }).filter((r): r is IhsgSeriesPoint => r !== null);
     };
 
@@ -267,6 +301,65 @@ export function MarketContextTab({ marketContext, onMarketContextUpdated }: Read
                 </button>
             </div>
 
+            <div className="card mb-8">
+                <div className="flex items-center justify-between gap-4 mb-4 flex-wrap">
+                    <div>
+                        <h3 className="font-semibold flex items-center gap-2">
+                            <LineChart size={18} /> Trend IHSG
+                        </h3>
+                        <p className="text-secondary text-sm">Grafik ini mengikuti data IHSG yang sudah disimpan, jadi perubahan trend langsung terlihat.</p>
+                    </div>
+                    {latestIhsg && (
+                        <div className="flex items-center gap-4 text-sm">
+                            <div>
+                                <div className="text-secondary text-xs">Close Terakhir</div>
+                                <div className="font-semibold">{latestIhsg.close.toLocaleString('id-ID')}</div>
+                            </div>
+                            <div>
+                                <div className="text-secondary text-xs">Change %</div>
+                                <div className={`font-semibold ${latestIhsg.changePercent !== undefined && latestIhsg.changePercent < 0 ? 'text-red' : 'text-green'}`}>
+                                    {latestIhsgChangeLabel}
+                                </div>
+                            </div>
+                            <div>
+                                <div className="text-secondary text-xs">Total Point</div>
+                                <div className="font-semibold">{ihsgSeries.length}</div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+
+                <div style={{ width: '100%', height: 340 }}>
+                    {ihsgChartData.length > 0 ? (
+                        <ResponsiveContainer>
+                            <ComposedChart data={ihsgChartData} margin={{ top: 10, right: 20, bottom: 10, left: 0 }}>
+                                <CartesianGrid strokeDasharray="3 3" stroke="#2D3139" />
+                                <XAxis dataKey="label" stroke="#8B949E" fontSize={12} minTickGap={24} />
+                                <YAxis stroke="#8B949E" fontSize={12} domain={['auto', 'auto']} tickFormatter={(value) => Number(value).toLocaleString('id-ID')} />
+                                <Tooltip
+                                    contentStyle={{ backgroundColor: '#161B22', borderColor: '#30363D', borderRadius: '8px' }}
+                                    itemStyle={{ color: '#E6EDF3' }}
+                                    labelStyle={{ color: '#E6EDF3' }}
+                                    formatter={(value: any, name: any) => {
+                                        if (name === 'Change %') {
+                                            return [`${Number(value).toFixed(2)}%`, name];
+                                        }
+                                        return [Number(value).toLocaleString('id-ID'), name as string];
+                                    }}
+                                    labelFormatter={(label) => `Tanggal: ${label}`}
+                                />
+                                <Area type="monotone" dataKey="close" name="Close IHSG" stroke="#388BFD" fill="rgba(56, 139, 253, 0.18)" strokeWidth={3} />
+                                <Line type="monotone" dataKey="changeFromPrevious" name="Change %" stroke="#3FB950" strokeWidth={2} dot={false} />
+                            </ComposedChart>
+                        </ResponsiveContainer>
+                    ) : (
+                        <div className="flex h-full items-center justify-center text-secondary rounded-lg border border-dashed border-white/10">
+                            Belum ada data IHSG. Input atau import data dulu untuk melihat trend.
+                        </div>
+                    )}
+                </div>
+            </div>
+
             <div className="grid grid-cols-4 gap-4 mb-8">
                 <div className="card">
                     <div className="text-secondary text-xs mb-1">IHSG Tersimpan</div>
@@ -321,7 +414,7 @@ export function MarketContextTab({ marketContext, onMarketContextUpdated }: Read
                         </div>
                         <div className="form-group">
                             <label htmlFor="flow-netbuy" className="text-xs text-secondary mb-1 block">Net Buy</label>
-                            <input id="flow-netbuy" type="number" className="input-field" value={flowNetBuy} onChange={(e) => setFlowNetBuy(e.target.value)} placeholder="1250000000" />
+                            <NumberInput value={flowNetBuy} onChange={setFlowNetBuy} className="input-field" placeholder="1.25B" />
                         </div>
                     </div>
                     <button onClick={addForeignFlowRow} className="btn btn-primary mt-4 flex items-center gap-2">

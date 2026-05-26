@@ -6,7 +6,11 @@ export interface BrokerCluster {
     correlationScore: number; // seberapa sering bergerak bersamaan (0-1)
     combinedNetBuy: number;   // total net buy gabungan (signed)
     isInstitutional: boolean; // heuristic flag
+    verdict: BrokerClusterVerdict;
+    verdictReason: string;
 }
+
+export type BrokerClusterVerdict = 'AKUMULASI' | 'DISTRIBUSI' | 'NETRAL';
 
 interface PairStat {
     coOccurrences: number;
@@ -155,7 +159,49 @@ function buildClusterFromGroup(brokersArr: string[], pairStats: Map<string, Pair
     const combinedNetBuy = brokersArr.reduce((acc, b) => acc + (brokerTotals.get(b) ?? 0), 0);
     const clusterName = brokersArr.join('-');
     const isInstitutional = Math.abs(combinedNetBuy) >= opts.institutionalNetBuyThreshold || avgCorr >= 0.8;
-    return { clusterName, brokers: brokersArr, correlationScore: Number(avgCorr.toFixed(3)), combinedNetBuy, isInstitutional };
+    const verdict = classifyClusterVerdict(combinedNetBuy, avgCorr, opts.institutionalNetBuyThreshold);
+    const verdictReason = buildClusterVerdictReason(verdict, combinedNetBuy, avgCorr, isInstitutional, opts.institutionalNetBuyThreshold);
+    return {
+        clusterName,
+        brokers: brokersArr,
+        correlationScore: Number(avgCorr.toFixed(3)),
+        combinedNetBuy,
+        isInstitutional,
+        verdict,
+        verdictReason,
+    };
+}
+
+function classifyClusterVerdict(combinedNetBuy: number, correlationScore: number, institutionalNetBuyThreshold: number): BrokerClusterVerdict {
+    const magnitude = Math.abs(combinedNetBuy);
+    const weakCluster = magnitude < institutionalNetBuyThreshold * 0.25 && correlationScore < 0.65;
+
+    if (weakCluster || combinedNetBuy === 0) {
+        return 'NETRAL';
+    }
+
+    return combinedNetBuy > 0 ? 'AKUMULASI' : 'DISTRIBUSI';
+}
+
+function buildClusterVerdictReason(
+    verdict: BrokerClusterVerdict,
+    combinedNetBuy: number,
+    correlationScore: number,
+    isInstitutional: boolean,
+    institutionalNetBuyThreshold: number
+): string {
+    const magnitudeText = `${Math.abs(combinedNetBuy).toLocaleString('id-ID')}`;
+    const correlationText = `${Math.round(correlationScore * 100)}%`;
+
+    if (verdict === 'AKUMULASI') {
+        return `Cluster net buyer dominan (+${magnitudeText}) dengan korelasi ${correlationText}${isInstitutional ? ' dan karakter institusional' : ''}.`;
+    }
+
+    if (verdict === 'DISTRIBUSI') {
+        return `Cluster net seller dominan (-${magnitudeText}) dengan korelasi ${correlationText}${isInstitutional ? ' dan karakter institusional' : ''}.`;
+    }
+
+    return `Arah cluster belum tegas: net buy masih kecil dibanding ambang ${institutionalNetBuyThreshold.toLocaleString('id-ID')} dan korelasi baru ${correlationText}.`;
 }
 
 export default detectBrokerClusters;

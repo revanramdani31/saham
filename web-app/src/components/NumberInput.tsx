@@ -10,38 +10,69 @@ interface NumberInputProps {
 }
 
 export const NumberInput = ({ value, onChange, className, style, placeholder = "0" }: NumberInputProps) => {
-  const displayValue = value === 0 ? '' : new Intl.NumberFormat('id-ID').format(value);
-  
+  const [localValue, setLocalValue] = React.useState(() => value === 0 ? '' : new Intl.NumberFormat('id-ID').format(value));
+
+  React.useEffect(() => {
+    let parseStr = localValue.toLowerCase().replace(/[^0-9mbk.,-]/g, '');
+    let multiplier = 1;
+    if (parseStr.endsWith('b')) { multiplier = 1000000000; parseStr = parseStr.replace('b', ''); }
+    else if (parseStr.endsWith('m')) { multiplier = 1000000; parseStr = parseStr.replace('m', ''); }
+    else if (parseStr.endsWith('k')) { multiplier = 1000; parseStr = parseStr.replace('k', ''); }
+    parseStr = parseStr.replace(/\./g, '').replace(',', '.');
+    const currentNum = parseFloat(parseStr) * multiplier;
+
+    if (currentNum !== value && !(isNaN(currentNum) && value === 0)) {
+      setLocalValue(value === 0 ? '' : new Intl.NumberFormat('id-ID').format(value));
+    }
+  }, [value, localValue]);
+
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    let rawString = e.target.value.toLowerCase().replace(/[^0-9mbk]/g, '');
+    const rawInput = e.target.value;
+    setLocalValue(rawInput);
+
+    let parseStr = rawInput.toLowerCase().replace(/[^0-9mbk.,-]/g, '');
     let multiplier = 1;
     
-    if (rawString.endsWith('b')) {
+    if (parseStr.endsWith('b')) {
       multiplier = 1000000000;
-      rawString = rawString.replace('b', '');
-    } else if (rawString.endsWith('m')) {
+      parseStr = parseStr.replace('b', '');
+    } else if (parseStr.endsWith('m')) {
       multiplier = 1000000;
-      rawString = rawString.replace('m', '');
-    } else if (rawString.endsWith('k')) {
+      parseStr = parseStr.replace('m', '');
+    } else if (parseStr.endsWith('k')) {
       multiplier = 1000;
-      rawString = rawString.replace('k', '');
+      parseStr = parseStr.replace('k', '');
     }
 
-    const num = parseInt(rawString, 10);
-    onChange(isNaN(num) ? 0 : num * multiplier);
+    parseStr = parseStr.replace(/\./g, '').replace(',', '.');
+    
+    if (parseStr === '-' || parseStr === '' || parseStr === '-.') {
+      onChange(0);
+      return;
+    }
+
+    const num = parseFloat(parseStr);
+    if (!isNaN(num)) {
+       onChange(num * multiplier);
+    }
   };
+
+  const handleBlur = () => {
+    setLocalValue(value === 0 ? '' : new Intl.NumberFormat('id-ID').format(value));
+  }
 
   return (
     <div style={{ width: style?.width || '100%' }}>
       <input 
         type="text" 
-        value={displayValue} 
+        value={localValue} 
         onChange={handleChange} 
+        onBlur={handleBlur}
         className={className} 
         style={{ ...style, width: '100%' }} 
         placeholder={placeholder}
       />
-      {value >= 1000 && (
+      {Math.abs(value) >= 1000 && (
         <div style={{ fontSize: '0.65rem', color: 'var(--accent-cyan)', marginTop: '2px', textAlign: 'right', fontWeight: 700 }}>
           {formatCompact(value)}
         </div>

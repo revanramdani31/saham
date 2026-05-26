@@ -17,6 +17,8 @@ export interface StockRecommendation {
   latestClose: number;
   latestDate: string;
   totalScore: number;
+  marketAdjustedScore: number;
+  marketAdjustment: number;
   grade: string;
   signal: string;
   phase: string;
@@ -59,6 +61,16 @@ export interface StockRecommendation {
   warnings: string[];
 }
 
+const DEFAULT_MARKET_REGIME: MarketRegime = {
+  ihsgPhase: 'SIDEWAYS',
+  ihsgTrend: 'FLAT',
+  sectorRotation: 'N/A',
+  foreignFlow: 'NEUTRAL',
+  fearGreedIndex: 50,
+  commentary: 'Belum ada market regime.',
+  source: 'proxy',
+};
+
 function adjustVerdictByMarket(
   verdict: RecommendationVerdict,
   phase: string,
@@ -87,18 +99,28 @@ function adjustVerdictByMarket(
   return verdict;
 }
 
+function computeMarketAdjustment(phase: string, marketRegime: MarketRegime): number {
+  let adjustment = Math.round((marketRegime.fearGreedIndex - 50) / 10);
+
+  if (marketRegime.ihsgPhase === 'BULL') {
+    if (phase === 'ACCUMULATION' || phase === 'MARKUP') adjustment += 2;
+    if (phase === 'SIDEWAYS') adjustment += 1;
+  } else if (marketRegime.ihsgPhase === 'BEAR') {
+    if (phase === 'ACCUMULATION') adjustment -= 4;
+    if (phase === 'MARKUP') adjustment -= 3;
+    if (phase === 'SIDEWAYS') adjustment -= 1;
+  }
+
+  if (marketRegime.foreignFlow === 'NET BUY') adjustment += 1;
+  if (marketRegime.foreignFlow === 'NET SELL') adjustment -= 1;
+
+  return Math.max(-10, Math.min(10, adjustment));
+}
+
 export function buildRecommendations(
   data: ProcessedData[],
   weights: ScoringWeights = DEFAULT_WEIGHTS,
-  marketRegime: MarketRegime = {
-    ihsgPhase: 'SIDEWAYS',
-    ihsgTrend: 'FLAT',
-    sectorRotation: 'N/A',
-    foreignFlow: 'NEUTRAL',
-    fearGreedIndex: 50,
-    commentary: 'Belum ada market regime.',
-    source: 'proxy',
-  }
+  marketRegime: MarketRegime = DEFAULT_MARKET_REGIME
 ): StockRecommendation[] {
   const aggregates = buildStockAggregates(data);
   const results: StockRecommendation[] = [];
@@ -115,7 +137,9 @@ export function buildRecommendations(
       computeStockLevelScore(agg, weights);
 
     // FIX A: Unified scoring — pakai confidenceAdjustedScore untuk semua keputusan
-    const effectiveScore = confidenceAdjustedScore;
+    const baseScore = confidenceAdjustedScore;
+    const marketAdjustment = computeMarketAdjustment(snap.phase.phase, marketRegime);
+    const adjustedScore = Math.max(0, Math.min(100, baseScore + marketAdjustment));
 
     const warnings: string[] = [];
     if (latestDayHasDistribution(agg)) {
@@ -151,11 +175,10 @@ export function buildRecommendations(
       warnings.push('✅ Market bull mendukung akumulasi');
     }
 
-    // FIX A+D: Verdict pakai effectiveScore (confidence-adjusted) bukan raw verdictScore
     let verdict: RecommendationVerdict = 'AVOID';
-    if (effectiveScore >= 65 && warnings.length === 0) verdict = 'STRONG BUY';
-    else if (effectiveScore >= 50 && warnings.length <= 1) verdict = 'BUY';
-    else if (effectiveScore >= 35) verdict = 'WATCH';
+    if (adjustedScore >= 65 && warnings.length === 0) verdict = 'STRONG BUY';
+    else if (adjustedScore >= 50 && warnings.length <= 1) verdict = 'BUY';
+    else if (adjustedScore >= 35) verdict = 'WATCH';
     else if (snap.phase.phase === 'MARKDOWN' || latestDayHasDistribution(agg)) verdict = 'SELL';
     else verdict = 'AVOID';
 
@@ -183,7 +206,9 @@ export function buildRecommendations(
       stock,
       latestClose: close,
       latestDate: lr.raw.date,
-      totalScore: effectiveScore,        // FIX A: unified score
+      totalScore: baseScore,        // confidence-adjusted score before IHSG adjustment
+      marketAdjustedScore: adjustedScore,
+      marketAdjustment,
       grade,
       signal,
       phase: snap.phase.phase,
@@ -203,7 +228,7 @@ export function buildRecommendations(
       estimateStatus,
       pricePhase: lr.price.pricePhase,
       candleStrength: snap.avgCandleStrength,   // FIX C: rata-rata semua broker
-      verdictScore: effectiveScore,
+      verdictScore: adjustedScore,
       verdict,
       entryLow,
       entryHigh,
@@ -221,17 +246,83 @@ export function buildRecommendations(
     });
   });
 
-  return results.sort((a, b) => b.verdictScore - a.verdictScore);
+  return results.sort((a, b) => b.marketAdjustedScore - a.marketAdjustedScore);
 }
 
-/** Rekomendasi satu saham pada tanggal tertentu (hanya data ≤ asOfDate). */
-export function buildRecommendationAsOf(
-  data: ProcessedData[],
-  stock: string,
+/**
+ * Rekomendasi untuk baris historis satu saham yang sudah dipotong hingga as-of date.
+ * Dipakai oleh backtest agar tidak perlu memindai seluruh dataset tiap iterasi.
+ */
+export function buildRecommendationForRowsAsOf(
+  stockRows: ProcessedData[],
   asOfDate: string,
   marketRegime?: MarketRegime
 ): StockRecommendation | null {
-  const subset = data.filter((r) => r.raw.stock === stock && r.raw.date <= asOfDate);
+  const subset = stockRows.filter((r) => r.raw.date <= asOfDate);
   if (subset.length === 0) return null;
-  return buildRecommendations(subset, DEFAULT_WEIGHTS, marketRegime).find((r) => r.stock === stock) ?? null;
+  return buildRecommendations(subset, DEFAULT_WEIGHTS, marketRegime).find((r) => r.stock === subset[0].raw.stock) ?? null;
 }
+
+/**
+ * Build recommendation history efficiently for all stocks and all dates.
+ * This avoids O(N^2) filtering in nested loops by pre-grouping data and accumulating it incrementally.
+ */
+export interface RecommendationHistoryLog {
+  date: string;
+  stock: string;
+  recommendation: StockRecommendation;
+}
+
+export function buildRecommendationHistory(
+  data: ProcessedData[],
+  marketRegime?: MarketRegime
+): RecommendationHistoryLog[] {
+  const stockGroups = new Map<string, Map<string, ProcessedData[]>>();
+  const allDatesSet = new Set<string>();
+
+  // Group by stock -> date -> rows
+  for (const row of data) {
+    const stock = row.raw.stock;
+    const date = row.raw.date;
+    allDatesSet.add(date);
+
+    if (!stockGroups.has(stock)) {
+      stockGroups.set(stock, new Map());
+    }
+    const dateMap = stockGroups.get(stock)!;
+    if (!dateMap.has(date)) {
+      dateMap.set(date, []);
+    }
+    dateMap.get(date)!.push(row);
+  }
+
+  const allDates = Array.from(allDatesSet).sort();
+  const results: RecommendationHistoryLog[] = [];
+
+  for (const [stock, dateMap] of stockGroups.entries()) {
+    const accumulatedRows: ProcessedData[] = [];
+    for (const date of allDates) {
+      const rowsForDate = dateMap.get(date);
+      if (rowsForDate) {
+        accumulatedRows.push(...rowsForDate);
+      }
+
+      if (accumulatedRows.length > 0) {
+        // Build recommendation with rows up to this date
+        // Since accumulatedRows only has this stock, it's very fast
+        const recs = buildRecommendations(accumulatedRows, DEFAULT_WEIGHTS, marketRegime);
+        const rec = recs.find(r => r.stock === stock);
+        if (rec) {
+          results.push({
+            date,
+            stock,
+            recommendation: rec
+          });
+        }
+      }
+    }
+  }
+
+  return results;
+}
+

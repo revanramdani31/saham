@@ -93,6 +93,40 @@ function VerdictBadge({ verdict }: { verdict: StockRecommendation['verdict'] }) 
   );
 }
 
+function ScoreComparison({ baseScore, adjustedScore, adjustment }: { baseScore: number; adjustedScore: number; adjustment: number }) {
+  const isPositive = adjustment > 0;
+  const isNegative = adjustment < 0;
+  const deltaColor = isPositive ? '#3FB950' : isNegative ? '#F85149' : '#8B949E';
+
+  return (
+    <div style={{ minWidth: '160px', textAlign: 'right' }}>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'baseline', gap: '8px' }}>
+        <div style={{ fontSize: '2rem', fontWeight: 800, color: deltaColor, lineHeight: 1 }}>{adjustedScore.toFixed(1)}</div>
+        <div style={{ fontSize: '0.72rem', color: deltaColor, fontWeight: 700 }}>
+          {adjustment > 0 ? '+' : ''}{adjustment.toFixed(1)} IHSG
+        </div>
+      </div>
+      <div style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', textTransform: 'uppercase', marginTop: '4px' }}>
+        Score sesudah IHSG adjustment
+      </div>
+      <div style={{ marginTop: '8px', padding: '8px 10px', borderRadius: '10px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-color)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>
+          <span>Base</span>
+          <strong style={{ color: 'var(--text-primary)' }}>{baseScore.toFixed(1)}</strong>
+        </div>
+        <div style={{ height: '5px', borderRadius: '999px', background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
+          <div style={{ width: `${Math.max(0, Math.min(100, baseScore))}%`, height: '100%', background: '#388BFD' }} />
+          <div style={{ width: `${Math.max(0, Math.min(100, adjustedScore))}%`, height: '100%', background: deltaColor, marginTop: '-5px', opacity: 0.7 }} />
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.68rem', marginTop: '5px' }}>
+          <span style={{ color: '#388BFD' }}>Before IHSG</span>
+          <span style={{ color: deltaColor }}>After IHSG</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function RegimeChip({ label, value, color }: { label: string; value: string; color: string }) {
   return (
     <div style={{ padding: '7px 10px', background: 'rgba(255,255,255,0.03)', borderRadius: '999px', border: `1px solid ${color}33`, display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
@@ -129,11 +163,18 @@ function TradingPlanCard({ rec }: { rec: StockRecommendation }) {
             Update: {rec.latestDate} &nbsp;|&nbsp; Close: <strong style={{ color: 'var(--text-primary)' }}>Rp {formatPrice(rec.latestClose)}</strong>
           </span>
         </div>
+        <ScoreComparison
+          baseScore={rec.totalScore}
+          adjustedScore={rec.marketAdjustedScore}
+          adjustment={rec.marketAdjustment}
+        />
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginBottom: '10px' }}>
+        <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+          Base score: <strong style={{ color: '#388BFD' }}>{rec.totalScore.toFixed(1)}</strong> | IHSG delta: <strong style={{ color: rec.marketAdjustment >= 0 ? '#3FB950' : '#F85149' }}>{rec.marketAdjustment > 0 ? '+' : ''}{rec.marketAdjustment.toFixed(1)}</strong>
+        </div>
         <div style={{ textAlign: 'right' }}>
-          <div style={{ fontSize: '2rem', fontWeight: 800, color: cfg.color, lineHeight: 1 }}>{rec.verdictScore}</div>
-          <div style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', textTransform: 'uppercase' }}>
-            Confidence-Adj Score
-          </div>
           <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: '2px' }}>
             Wyckoff: <strong style={{ color: rec.phaseConfidence >= 50 ? '#3FB950' : rec.phaseConfidence >= 30 ? '#D29922' : '#F85149' }}>
               {rec.phaseConfidence}%

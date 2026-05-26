@@ -263,7 +263,7 @@ function App() {
         )}
 
         {activeTab === 'validation' && (
-          <ValidationTab data={processedData} />
+          <ValidationTab data={processedData} marketContext={marketContext ?? undefined} />
         )}
       </div>
     </div>

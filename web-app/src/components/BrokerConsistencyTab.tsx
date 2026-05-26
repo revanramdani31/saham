@@ -1,8 +1,15 @@
 import { useState, useMemo } from 'react';
 import type { ProcessedData } from '../engine/types';
-import { Users, Search } from 'lucide-react';
+import { Users, Search, Fingerprint } from 'lucide-react';
 import { formatCompact } from '../utils/format';
 import { exportBrokerFlow } from '../utils/exportCsv';
+import {
+  computeProfileMetrics,
+  classifyBrokerBehavior,
+  getBehaviorBadgeStyle,
+  type BrokerBehaviorProfile,
+  type BrokerProfileMetrics,
+} from '../engine/brokerProfiler';
 
 interface BrokerConsistencyTabProps {
   data: ProcessedData[];
@@ -17,6 +24,11 @@ interface StockStat {
   avgNetBuy: number;
   latestPhase: string;
   signal: string;
+  totalBuyValue: number;
+  totalSellValue: number;
+  grossValue: number;
+  netGrossRatio: number;
+  behaviorProfile: BrokerBehaviorProfile;
 }
 
 interface BrokerCrossStock {
@@ -26,6 +38,8 @@ interface BrokerCrossStock {
   avgConsistency: number;
   strongestStock: string;
   stockStats: StockStat[];
+  globalMetrics: BrokerProfileMetrics;
+  globalProfile: BrokerBehaviorProfile;
 }
 
 export function BrokerConsistencyTab({ data }: BrokerConsistencyTabProps) {
@@ -44,11 +58,35 @@ export function BrokerConsistencyTab({ data }: BrokerConsistencyTabProps) {
 
     const brokerData = data.filter(d => d.raw.broker === activeBroker);
 
-    // Group by stock
+    // Compute total market days (unique dates across ALL data)
+    const allDates = new Set<string>();
+    data.forEach(d => allDates.add(d.raw.date));
+    const totalMarketDays = allDates.size;
+
+    // Group by stock — collect daily rows for profiling
+    const stockDailyRows = new Map<string, { buyValue: number; sellValue: number; netBuy: number }[]>();
     const stockMap = new Map<string, StockStat>();
     const sortedBrokerData = [...brokerData].sort((a, b) => new Date(a.raw.date).getTime() - new Date(b.raw.date).getTime());
 
+    // Also collect global daily rows (one entry per date, aggregated)
+    const globalDailyMap = new Map<string, { buyValue: number; sellValue: number; netBuy: number }>();
+
     sortedBrokerData.forEach(row => {
+      // Accumulate global daily
+      const gd = globalDailyMap.get(row.raw.date) ?? { buyValue: 0, sellValue: 0, netBuy: 0 };
+      gd.buyValue += row.raw.buyValue;
+      gd.sellValue += row.raw.sellValue;
+      gd.netBuy += row.flow.netBuy;
+      globalDailyMap.set(row.raw.date, gd);
+
+      // Accumulate per-stock daily
+      if (!stockDailyRows.has(row.raw.stock)) stockDailyRows.set(row.raw.stock, []);
+      stockDailyRows.get(row.raw.stock)!.push({
+        buyValue: row.raw.buyValue,
+        sellValue: row.raw.sellValue,
+        netBuy: row.flow.netBuy,
+      });
+
       if (!stockMap.has(row.raw.stock)) {
         stockMap.set(row.raw.stock, {
           stock: row.raw.stock,
@@ -59,19 +97,33 @@ export function BrokerConsistencyTab({ data }: BrokerConsistencyTabProps) {
           avgNetBuy: 0,
           latestPhase: row.phase.phase,
           signal: row.score.signal,
+          totalBuyValue: 0,
+          totalSellValue: 0,
+          grossValue: 0,
+          netGrossRatio: 0,
+          behaviorProfile: { tag: 'PASSIVE', label: 'Passive', description: '', confidence: 0 },
         });
       }
       const s = stockMap.get(row.raw.stock)!;
       s.totalNetBuy += row.flow.netBuy;
+      s.totalBuyValue += row.raw.buyValue;
+      s.totalSellValue += row.raw.sellValue;
       s.days++;
       if (row.flow.netBuy > 0) s.buyDays++;
       s.latestPhase = row.phase.phase;
       s.signal = row.score.signal;
     });
 
-    stockMap.forEach(s => {
+    stockMap.forEach((s, stock) => {
       s.consistency = s.days > 0 ? (s.buyDays / s.days) * 100 : 0;
       s.avgNetBuy = s.days > 0 ? s.totalNetBuy / s.days : 0;
+      s.grossValue = s.totalBuyValue + s.totalSellValue;
+      s.netGrossRatio = s.grossValue > 0 ? Math.abs(s.totalNetBuy) / s.grossValue : 0;
+
+      // Per-stock behavior profile
+      const rows = stockDailyRows.get(stock) ?? [];
+      const metrics = computeProfileMetrics(rows, totalMarketDays);
+      s.behaviorProfile = classifyBrokerBehavior(metrics);
     });
 
     const stockStats = Array.from(stockMap.values()).sort((a, b) => b.totalNetBuy - a.totalNetBuy);
@@ -80,6 +132,11 @@ export function BrokerConsistencyTab({ data }: BrokerConsistencyTabProps) {
     const avgConsistency = stockStats.reduce((acc, s) => acc + s.consistency, 0) / (stockStats.length || 1);
     const strongestStock = stockStats[0]?.stock || '-';
 
+    // Global behavior profile
+    const globalDailyArr = Array.from(globalDailyMap.values());
+    const globalMetrics = computeProfileMetrics(globalDailyArr, totalMarketDays);
+    const globalProfile = classifyBrokerBehavior(globalMetrics);
+
     return {
       broker: activeBroker,
       totalStocks: stockStats.length,
@@ -87,6 +144,8 @@ export function BrokerConsistencyTab({ data }: BrokerConsistencyTabProps) {
       avgConsistency,
       strongestStock,
       stockStats,
+      globalMetrics,
+      globalProfile,
     };
   }, [data, activeBroker]);
 
@@ -156,6 +215,62 @@ export function BrokerConsistencyTab({ data }: BrokerConsistencyTabProps) {
             </div>
           </div>
 
+          {/* Global Persona Card */}
+          {(() => {
+            const gp = brokerStats.globalProfile;
+            const gm = brokerStats.globalMetrics;
+            const gpStyle = getBehaviorBadgeStyle(gp.tag);
+            return (
+              <div className="card mb-6" style={{ borderLeft: `3px solid ${gpStyle.color}` }}>
+                <div className="flex items-start gap-4">
+                  <div className="p-3 rounded-lg" style={{ background: gpStyle.bg }}>
+                    <Fingerprint size={28} style={{ color: gpStyle.color }} />
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center gap-3 mb-2 flex-wrap">
+                      <h3 className="font-semibold text-white m-0">Profil Perilaku Global: {activeBroker}</h3>
+                      <span style={{
+                        padding: '4px 12px',
+                        borderRadius: '6px',
+                        fontSize: '0.75rem',
+                        fontWeight: 700,
+                        background: gpStyle.bg,
+                        color: gpStyle.color,
+                        border: `1px solid ${gpStyle.border}`,
+                      }}>
+                        {gp.label}
+                      </span>
+                      <span className="text-xs text-secondary">Confidence: {gp.confidence.toFixed(0)}%</span>
+                    </div>
+                    <p className="text-sm text-secondary mb-3 leading-relaxed">{gp.description}</p>
+                    <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                      <div className="bg-dark-2 p-2 rounded border border-white/5 text-center">
+                        <div className="text-xs text-secondary">Net/Gross</div>
+                        <div className="font-bold text-sm text-white">{(gm.netGrossRatio * 100).toFixed(1)}%</div>
+                      </div>
+                      <div className="bg-dark-2 p-2 rounded border border-white/5 text-center">
+                        <div className="text-xs text-secondary">Partisipasi</div>
+                        <div className="font-bold text-sm text-white">{(gm.participationRate * 100).toFixed(0)}%</div>
+                      </div>
+                      <div className="bg-dark-2 p-2 rounded border border-white/5 text-center">
+                        <div className="text-xs text-secondary">Hari Aktif</div>
+                        <div className="font-bold text-sm text-white">{gm.daysActive} / {gm.totalMarketDays}</div>
+                      </div>
+                      <div className="bg-dark-2 p-2 rounded border border-white/5 text-center">
+                        <div className="text-xs text-secondary">Avg Gross/Hari</div>
+                        <div className="font-bold text-sm text-white">{formatCompact(gm.avgDailyGross)}</div>
+                      </div>
+                      <div className="bg-dark-2 p-2 rounded border border-white/5 text-center">
+                        <div className="text-xs text-secondary">Konsentrasi</div>
+                        <div className="font-bold text-sm text-white">{(gm.concentrationRatio * 100).toFixed(0)}%</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
           {/* Per-stock breakdown */}
           <div className="card">
             <div className="flex items-center gap-2 mb-4">
@@ -172,13 +287,17 @@ export function BrokerConsistencyTab({ data }: BrokerConsistencyTabProps) {
                     <th>Hari Aktif</th>
                     <th>Total Net Buy</th>
                     <th>Avg/Hari</th>
+                    <th>Net/Gross</th>
                     <th>Konsistensi Beli</th>
-                    <th>Phase Terkini</th>
+                    <th>Behavior</th>
+                    <th>Phase</th>
                     <th>Signal</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {brokerStats.stockStats.map((s, idx) => (
+                  {brokerStats.stockStats.map((s, idx) => {
+                    const bStyle = getBehaviorBadgeStyle(s.behaviorProfile.tag);
+                    return (
                     <tr key={idx}>
                       <td className="font-bold text-lg">{s.stock}</td>
                       <td className="text-secondary">{s.days} hari</td>
@@ -193,6 +312,11 @@ export function BrokerConsistencyTab({ data }: BrokerConsistencyTabProps) {
                         </span>
                       </td>
                       <td>
+                        <span className="font-mono text-sm" style={{ color: s.netGrossRatio >= 0.3 ? '#3FB950' : s.netGrossRatio >= 0.15 ? '#D29922' : '#8B949E' }}>
+                          {(s.netGrossRatio * 100).toFixed(1)}%
+                        </span>
+                      </td>
+                      <td>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                           <div style={{ height: '6px', borderRadius: '3px', width: '60px', background: 'var(--border-color)' }}>
                             <div style={{
@@ -204,6 +328,24 @@ export function BrokerConsistencyTab({ data }: BrokerConsistencyTabProps) {
                           <span className="text-xs">{s.consistency.toFixed(0)}%</span>
                         </div>
                       </td>
+                      <td>
+                        <span
+                          title={s.behaviorProfile.description}
+                          style={{
+                            padding: '3px 8px',
+                            borderRadius: '6px',
+                            fontSize: '0.7rem',
+                            fontWeight: 700,
+                            background: bStyle.bg,
+                            color: bStyle.color,
+                            border: `1px solid ${bStyle.border}`,
+                            cursor: 'help',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {s.behaviorProfile.label}
+                        </span>
+                      </td>
                       <td className="text-sm text-secondary">{s.latestPhase}</td>
                       <td>
                         <span className={`font-semibold text-sm ${getSignalColor(s.signal)}`}>
@@ -211,7 +353,8 @@ export function BrokerConsistencyTab({ data }: BrokerConsistencyTabProps) {
                         </span>
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

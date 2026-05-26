@@ -1,6 +1,8 @@
 import type { ProcessedData } from './types';
+import type { MarketContext } from './marketContext';
+import { detectMarketRegime, type MarketRegime } from './marketRegime';
 import {
-  buildRecommendationAsOf,
+  buildRecommendationForRowsAsOf,
   type RecommendationVerdict,
 } from './recommendations';
 
@@ -56,12 +58,10 @@ export function validationRecordId(
 }
 
 function getDailyCloses(
-  data: ProcessedData[],
-  stock: string
+  data: ProcessedData[]
 ): { date: string; close: number; high: number; low: number }[] {
   const byDate = new Map<string, { close: number; high: number; low: number }>();
   for (const r of data) {
-    if (r.raw.stock !== stock) continue;
     if (!byDate.has(r.raw.date)) {
       byDate.set(r.raw.date, {
         close: r.raw.close,
@@ -73,6 +73,24 @@ function getDailyCloses(
   return Array.from(byDate.entries())
     .sort((a, b) => a[0].localeCompare(b[0]))
     .map(([date, ohlc]) => ({ date, ...ohlc }));
+}
+
+function filterMarketContextAsOf(context: MarketContext | undefined, asOfDate: string): MarketContext | undefined {
+  if (!context) return undefined;
+
+  const ihsgSeries = context.ihsgSeries?.filter((point) => point.date <= asOfDate);
+  const foreignFlowSeries = context.foreignFlowSeries?.filter((point) => point.date <= asOfDate);
+  const sectorMap = context.sectorMap ? { ...context.sectorMap } : undefined;
+
+  if (!ihsgSeries?.length && !foreignFlowSeries?.length && !sectorMap) {
+    return undefined;
+  }
+
+  return {
+    ihsgSeries: ihsgSeries?.length ? ihsgSeries : undefined,
+    foreignFlowSeries: foreignFlowSeries?.length ? foreignFlowSeries : undefined,
+    sectorMap,
+  };
 }
 
 function evaluateOutcome(
@@ -176,20 +194,53 @@ function checkTpSlFirstTouchConservative(
  */
 export function runRecommendationValidation(
   data: ProcessedData[],
-  options: ValidationOptions = DEFAULT_VALIDATION_OPTIONS
+  options: ValidationOptions = DEFAULT_VALIDATION_OPTIONS,
+  marketContext?: MarketContext
 ): ValidationRecord[] {
-  const stocks = [...new Set(data.map((r) => r.raw.stock))];
+  const rowsByStock = new Map<string, ProcessedData[]>();
+  const uniqueDatesSet = new Set<string>();
+
+  for (const row of data) {
+    uniqueDatesSet.add(row.raw.date);
+    const rows = rowsByStock.get(row.raw.stock);
+    if (rows) {
+      rows.push(row);
+    } else {
+      rowsByStock.set(row.raw.stock, [row]);
+    }
+  }
+
+  const uniqueDates = Array.from(uniqueDatesSet).sort();
+  const regimeByDate = new Map<string, MarketRegime>();
+  const accumulatedData: ProcessedData[] = [];
+  let dataIdx = 0;
+  const sortedData = [...data].sort((a, b) => a.raw.date.localeCompare(b.raw.date));
+
+  for (const date of uniqueDates) {
+    while (dataIdx < sortedData.length && sortedData[dataIdx].raw.date <= date) {
+      accumulatedData.push(sortedData[dataIdx]);
+      dataIdx++;
+    }
+    const ctx = filterMarketContextAsOf(marketContext, date);
+    regimeByDate.set(date, detectMarketRegime(accumulatedData, ctx ?? {}));
+  }
+
   const records: ValidationRecord[] = [];
 
-  for (const stock of stocks) {
-    const candles = getDailyCloses(data, stock);
+  for (const [stock, stockRows] of rowsByStock) {
+    const candles = getDailyCloses(stockRows);
     if (candles.length < 2) continue;
 
     for (let i = 0; i < candles.length; i++) {
       const signalDate = candles[i].date;
       const entryClose = candles[i].close;
+      const regime = regimeByDate.get(signalDate);
 
-      const rec = buildRecommendationAsOf(data, stock, signalDate);
+      const rec = buildRecommendationForRowsAsOf(
+        stockRows,
+        signalDate,
+        regime
+      );
       if (!rec) continue;
 
       const futureIdx = i + options.forwardSessions;

@@ -1,6 +1,6 @@
 // Export utilities for downloading data as CSV from the browser
 import type { ProcessedData, RawTradeData } from '../engine/types';
-import { buildRecommendationAsOf } from '../engine/recommendations';
+import { buildRecommendationHistory } from '../engine/recommendations';
 
 function downloadCsv(filename: string, content: string) {
   const blob = new Blob(['\uFEFF' + content], { type: 'text/csv;charset=utf-8;' });
@@ -46,8 +46,7 @@ export function exportSignals(data: ProcessedData[]) {
     'Avg Vol Ratio'
   ];
 
-  const dates = Array.from(new Set(data.map((d) => d.raw.date))).sort((a, b) => a.localeCompare(b));
-  const stocks = Array.from(new Set(data.map((d) => d.raw.stock))).sort((a, b) => a.localeCompare(b));
+
 
   const logs: Array<{
     date: string;
@@ -61,23 +60,21 @@ export function exportSignals(data: ProcessedData[]) {
     avgVolRatio: number;
   }> = [];
 
-  for (const stock of stocks) {
-    for (const date of dates) {
-      const rec = buildRecommendationAsOf(data, stock, date);
-      if (!rec) continue;
+  const history = buildRecommendationHistory(data);
 
-      logs.push({
-        date,
-        stock,
-        grade: rec.grade,
-        totalScore: rec.totalScore,
-        phase: rec.phase,
-        signal: rec.signal,
-        behaviorLabel: rec.behaviorLabel,
-        cumulativeNetBuy: rec.cumulativeNetBuy,
-        avgVolRatio: rec.avgVolRatio,
-      });
-    }
+  for (const log of history) {
+    const rec = log.recommendation;
+    logs.push({
+      date: log.date,
+      stock: log.stock,
+      grade: rec.grade,
+      totalScore: rec.totalScore,
+      phase: rec.phase,
+      signal: rec.signal,
+      behaviorLabel: rec.behaviorLabel,
+      cumulativeNetBuy: rec.cumulativeNetBuy,
+      avgVolRatio: rec.avgVolRatio,
+    });
   }
 
   const sorted = [...logs].sort((a, b) => {

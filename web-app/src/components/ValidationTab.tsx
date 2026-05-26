@@ -1,5 +1,6 @@
 import { useMemo, useState, useEffect, useCallback } from 'react';
 import type { ProcessedData } from '../engine/types';
+import type { MarketContext } from '../engine/marketContext';
 import {
   runRecommendationValidation,
   computeValidationStats,
@@ -34,6 +35,7 @@ import { formatPrice } from '../utils/format';
 
 interface ValidationTabProps {
   data: ProcessedData[];
+  marketContext?: MarketContext;
 }
 
 type OutcomeFilter = 'ALL' | 'BENAR' | 'SALAH' | 'NETRAL' | 'MENUNGGU';
@@ -68,7 +70,7 @@ function OutcomeBadge({ outcome }: { outcome: ValidationOutcome }) {
   );
 }
 
-export function ValidationTab({ data }: ValidationTabProps) {
+export function ValidationTab({ data, marketContext }: Readonly<ValidationTabProps>) {
   const [options, setOptions] = useState<ValidationOptions>(DEFAULT_VALIDATION_OPTIONS);
   const [manualMap, setManualMap] = useState<Record<string, ManualValidationEntry>>({});
   const [filter, setFilter] = useState<OutcomeFilter>('ALL');
@@ -105,8 +107,8 @@ export function ValidationTab({ data }: ValidationTabProps) {
   );
 
   const records = useMemo(
-    () => runRecommendationValidation(data, options),
-    [data, options]
+    () => runRecommendationValidation(data, options, marketContext),
+    [data, options, marketContext]
   );
 
   const stats = useMemo(
