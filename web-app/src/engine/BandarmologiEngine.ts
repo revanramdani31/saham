@@ -121,7 +121,7 @@ export class BandarmologiEngine {
       const price = this.calculatePriceAction(row, historicalData);
       // FIX #2: Pass full rawData for proper historical avgVol (excluding today)
       const volume = this.calculateVolumeAnalyzer(row, dailyTotals, this.rawData);
-      const behavior = this.calculateBrokerBehavior(row, flow, price, volume);
+      const behavior = this.calculateBrokerBehavior(row, flow, price, volume, this.rawData);
 
       // FIX #3 (Deep): Use Top Broker Net Accumulation for Phase Detector (avoid zero-sum total market bias)
       const netBuyAgg = dailyTotals.top3BuyerNetBuy + dailyTotals.top3SellerNetBuy;
@@ -342,8 +342,38 @@ export class BandarmologiEngine {
     };
   }
 
-  private calculateBrokerBehavior(row: RawTradeData, flow: BrokerFlowResult, price: PriceActionResult, vol: VolumeAnalyzerResult): BrokerBehaviorResult {
-    const bow = flow.netBuy > 0 && price.priceChangePercent < -0.005;
+  private calculateBrokerBehavior(row: RawTradeData, flow: BrokerFlowResult, price: PriceActionResult, vol: VolumeAnalyzerResult, allData: RawTradeData[]): BrokerBehaviorResult {
+    // FIX BOW: Konfirmasi minimal 2 dari 3 hari terakhir harus menunjukkan net buy saat harga turun
+    // Ini eliminasi "fake BOW" dari 1 candle — bandar serius akumulasi secara konsisten
+    const brokerHistory = allData
+      .filter(d => d.broker === row.broker && d.stock === row.stock && d.date < row.date)
+      .sort((a, b) => a.date.localeCompare(b.date));
+
+    // Ambil 2 hari terakhir sebelum hari ini
+    const recentDays = brokerHistory.slice(-2);
+
+    // Hitung berapa hari dari history yang menunjukkan BOW (net buy saat harga turun)
+    // Kita butuh close harga hari sebelumnya untuk hitung perubahan harga tiap hari
+    let confirmedBowDays = 0;
+    for (let i = 0; i < recentDays.length; i++) {
+      const d = recentDays[i];
+      const netBuyD = d.buyValue - d.sellValue;
+      // Cari close hari sebelum d
+      const prevDays = brokerHistory.filter(x => x.stock === d.stock && x.date < d.date);
+      const prevClose = prevDays.length > 0 ? prevDays[prevDays.length - 1].close : d.close;
+      const priceChgD = prevClose === 0 ? 0 : (d.close - prevClose) / prevClose;
+      if (netBuyD > 0 && priceChgD < -0.005) confirmedBowDays++;
+    }
+    // Hari ini sendiri juga harus menunjukkan BOW
+    const todayBow = flow.netBuy > 0 && price.priceChangePercent < -0.005;
+    // BOW confirmed jika: hari ini BOW + minimal 1 dari 2 hari sebelumnya juga BOW
+    // (jika data kurang dari 2 hari, cukup 1 konfirmasi atau hari ini saja dengan volume spike)
+    const bow = todayBow && (
+      recentDays.length === 0
+        ? vol.volRatio > 2.0  // Hari pertama: butuh volume spike kuat sebagai pengganti konfirmasi
+        : confirmedBowDays >= 1  // Ada data history: minimal 1 hari konfirmasi
+    );
+
     const sos = flow.netBuy < 0 && price.priceChangePercent > 0.005;
     const abs = flow.netBuy > 0 && Math.abs(price.priceChangePercent) < 0.005 && vol.volRatio > 1.5;
     const dist = flow.netBuy < 0 && vol.volRatio > 1.5 && price.candleStrength < 0.4;
@@ -440,7 +470,21 @@ export class BandarmologiEngine {
   private calculateScoring(row: RawTradeData, flow: BrokerFlowResult, price: PriceActionResult, vol: VolumeAnalyzerResult, behavior: BrokerBehaviorResult, phase: PhaseDetectorResult): ScoringEngineResult {
     // Scoring engine Bug-007 fix logic:
     const netBuyScore = Math.max(0, Math.min(25, (flow.buyRatio - 0.5) * 50));
-    const volumeScore = Math.min(20, vol.volRatio * 10);
+
+    // FIX 2: Liquidity gate — saham lapis 3 (low-cap) tidak boleh dapat volume score tinggi
+    // Minimum daily market value 500 juta rupiah untuk score penuh
+    // Di bawah itu score di-discount proporsional agar tidak muncul sebagai sinyal palsu
+    const MIN_LIQUID_VAL = 500_000_000;   // 500 juta = threshold liquid
+    const MIN_VIABLE_VAL = 50_000_000;    // 50 juta = batas bawah absolut
+    const dailyMarketVal = flow.stockTotalBuy + flow.stockTotalSell;
+    const liquidityFactor =
+      dailyMarketVal >= MIN_LIQUID_VAL ? 1.0 :
+      dailyMarketVal >= MIN_VIABLE_VAL
+        ? 0.3 + 0.7 * ((dailyMarketVal - MIN_VIABLE_VAL) / (MIN_LIQUID_VAL - MIN_VIABLE_VAL))
+        : 0.1; // hampir nol — saham sangat illiquid
+    const rawVolumeScore = Math.min(20, vol.volRatio * 10);
+    const volumeScore = rawVolumeScore * liquidityFactor;
+
     const candleScore = Math.min(15, price.candleStrength * 15);
     const behaviorScore = Math.max(-15, Math.min(25, behavior.behaviorScore / 2));
     

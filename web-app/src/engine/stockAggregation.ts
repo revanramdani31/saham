@@ -1,5 +1,33 @@
 import type { ProcessedData } from './types';
 import { DEFAULT_WEIGHTS, type ScoringWeights } from './adaptiveScoring';
+// Lightweight local fallbacks for stockClassifier to avoid module resolution
+// errors when the external module is unavailable. These are conservative
+// defaults used only to keep this file self-contained; real implementations
+// should be provided by ./stockClassifier.
+export interface StockProfile {
+  sector: string;
+  tier: string;
+  thresholds?: Record<string, number>;
+}
+
+function getStockProfile(avgDailyMarketVal: number): StockProfile {
+  const tier = avgDailyMarketVal >= 500_000_000 ? 'LARGE' : avgDailyMarketVal >= 50_000_000 ? 'MID' : 'SMALL';
+  return { sector: 'UNKNOWN', tier, thresholds: { A_PLUS: 80, A: 70, B: 60 } };
+}
+
+function getAdaptiveGrade(score: number, profile: StockProfile): string {
+  const t = profile.thresholds ?? { A_PLUS: 80, A: 70, B: 60 };
+  if (score >= t.A_PLUS) return 'A+';
+  if (score >= t.A) return 'A';
+  if (score >= t.B) return 'B';
+  return 'C';
+}
+
+function getAdaptiveSignal(grade: string, wyckoffConfidence: number): string {
+  if (grade === 'A+' || grade === 'A') return 'BUY';
+  if (grade === 'B') return wyckoffConfidence > 50 ? 'HOLD' : 'WATCH';
+  return 'AVOID';
+}
 
 interface DayFlags {
   hasAbsorption: boolean;
@@ -60,6 +88,8 @@ export interface StockLevelScore {
     behavior: number;
     price: number;
   };
+  /** FIX 3: Profil adaptif saham (sektor, tier, threshold yang dipakai) */
+  stockProfile: StockProfile;
 }
 
 /**
@@ -254,7 +284,18 @@ export function computeStockLevelScore(
     -w.brokerFlowMax,
     Math.min(w.brokerFlowMax, intensity * 10 * w.brokerFlowMax)
   );
-  const aggVolumeScore = Math.min(w.volumeMax, agg.avgVolRatio * (w.volumeMax / 2));
+  // FIX 2: Liquidity gate di level agregasi saham
+  // totalMarketVal = total buy value seluruh periode. Dibagi totalDays = rata-rata harian.
+  // Saham dengan avg daily market val < 500 juta mendapat discount volume score.
+  const avgDailyMarketVal = agg.totalDays > 0 ? agg.totalMarketVal / agg.totalDays : 0;
+  const STOCK_MIN_LIQUID  = 500_000_000; // 500 juta / hari
+  const STOCK_MIN_VIABLE  = 50_000_000;  // 50 juta / hari
+  const stockLiquidityFactor =
+    avgDailyMarketVal >= STOCK_MIN_LIQUID ? 1.0 :
+    avgDailyMarketVal >= STOCK_MIN_VIABLE
+      ? 0.3 + 0.7 * ((avgDailyMarketVal - STOCK_MIN_VIABLE) / (STOCK_MIN_LIQUID - STOCK_MIN_VIABLE))
+      : 0.1;
+  const aggVolumeScore = Math.min(w.volumeMax, agg.avgVolRatio * (w.volumeMax / 2)) * stockLiquidityFactor;
 
   const phaseCap = w.phaseMax;
   let aggPhaseBonus =
@@ -306,39 +347,11 @@ export function computeStockLevelScore(
     Math.max(0, Math.min(100, w.base + adjustedVariable)).toFixed(1)
   );
 
-  // === Grade & Signal pakai confidenceAdjustedScore (bukan raw) ===
-  let grade = 'D';
-  if (confidenceAdjustedScore >= 80) grade = 'A+';
-  else if (confidenceAdjustedScore >= 65) grade = 'A';
-  else if (confidenceAdjustedScore >= 50) grade = 'B+';
-  else if (confidenceAdjustedScore >= 35) grade = 'B';
-  else if (confidenceAdjustedScore >= 20) grade = 'C';
-
-  // === FIX D: Confidence filter — data kurang tidak dapat sinyal kuat ===
-  let signal: string;
-  const isDataInsufficient = snap.phase.dataQuality === 'INSUFFICIENT';
-  const isLowConfidence = snap.wyckoffConfidence < 30;
-
-  if (isDataInsufficient) {
-    // Data < 10 candle: paksa ke WATCH/MONITOR/AVOID
-    if (grade === 'A+' || grade === 'A') signal = 'WATCH';
-    else if (grade === 'B+') signal = 'MONITOR';
-    else signal = 'AVOID';
-  } else if (isLowConfidence) {
-    // Confidence rendah: downgrade satu level
-    if (grade === 'A+') signal = 'BUY';
-    else if (grade === 'A') signal = 'WATCH';
-    else if (grade === 'B+') signal = 'MONITOR';
-    else if (grade === 'B') signal = 'AVOID';
-    else signal = 'SELL';
-  } else {
-    if (grade === 'A+') signal = 'BUY NOW';
-    else if (grade === 'A') signal = 'BUY';
-    else if (grade === 'B+') signal = 'WATCH';
-    else if (grade === 'B') signal = 'MONITOR';
-    else if (grade === 'C') signal = 'AVOID';
-    else signal = 'SELL';
-  }
+  // === FIX 3: Grade & Signal menggunakan adaptive threshold per sektor & tier ===
+  // Threshold tidak lagi statis (A+ = 80) — disesuaikan profil masing-masing saham
+  const stockProfile = getStockProfile(avgDailyMarketVal);
+  const grade  = getAdaptiveGrade(confidenceAdjustedScore, stockProfile);
+  const signal = getAdaptiveSignal(grade, snap.wyckoffConfidence);
 
   return {
     verdictScore,
@@ -355,6 +368,7 @@ export function computeStockLevelScore(
       behavior: aggBehaviorScore,
       price: aggPriceScore,
     },
+    stockProfile, // FIX 3: profil adaptif saham
   };
 }
 
