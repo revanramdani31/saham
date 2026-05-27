@@ -288,13 +288,13 @@ export function computeStockLevelScore(
   // totalMarketVal = total buy value seluruh periode. Dibagi totalDays = rata-rata harian.
   // Saham dengan avg daily market val < 500 juta mendapat discount volume score.
   const avgDailyMarketVal = agg.totalDays > 0 ? agg.totalMarketVal / agg.totalDays : 0;
-  const STOCK_MIN_LIQUID  = 500_000_000; // 500 juta / hari
-  const STOCK_MIN_VIABLE  = 50_000_000;  // 50 juta / hari
+  const STOCK_MIN_LIQUID = 500_000_000; // 500 juta / hari
+  const STOCK_MIN_VIABLE = 50_000_000;  // 50 juta / hari
   const stockLiquidityFactor =
     avgDailyMarketVal >= STOCK_MIN_LIQUID ? 1.0 :
-    avgDailyMarketVal >= STOCK_MIN_VIABLE
-      ? 0.3 + 0.7 * ((avgDailyMarketVal - STOCK_MIN_VIABLE) / (STOCK_MIN_LIQUID - STOCK_MIN_VIABLE))
-      : 0.1;
+      avgDailyMarketVal >= STOCK_MIN_VIABLE
+        ? 0.3 + 0.7 * ((avgDailyMarketVal - STOCK_MIN_VIABLE) / (STOCK_MIN_LIQUID - STOCK_MIN_VIABLE))
+        : 0.1;
   const aggVolumeScore = Math.min(w.volumeMax, agg.avgVolRatio * (w.volumeMax / 2)) * stockLiquidityFactor;
 
   const phaseCap = w.phaseMax;
@@ -350,7 +350,7 @@ export function computeStockLevelScore(
   // === FIX 3: Grade & Signal menggunakan adaptive threshold per sektor & tier ===
   // Threshold tidak lagi statis (A+ = 80) — disesuaikan profil masing-masing saham
   const stockProfile = getStockProfile(avgDailyMarketVal);
-  const grade  = getAdaptiveGrade(confidenceAdjustedScore, stockProfile);
+  const grade = getAdaptiveGrade(confidenceAdjustedScore, stockProfile);
   const signal = getAdaptiveSignal(grade, snap.wyckoffConfidence);
 
   return {
