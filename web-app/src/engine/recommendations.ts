@@ -9,13 +9,16 @@ import {
   getStockBehaviorSummary,
   latestDayHasDistribution,
 } from './stockAggregation';
+import { getSectorForStock, mergeSectorMaps, buildDefaultMarketContext } from './marketContext';
 
 export type RecommendationVerdict = 'STRONG BUY' | 'BUY' | 'WATCH' | 'AVOID' | 'SELL';
 
 export interface StockRecommendation {
   stock: string;
+  sector: string;
   latestClose: number;
   latestDate: string;
+  rawScore: number;
   totalScore: number;
   marketAdjustedScore: number;
   marketAdjustment: number;
@@ -120,8 +123,11 @@ function computeMarketAdjustment(phase: string, marketRegime: MarketRegime): num
 export function buildRecommendations(
   data: ProcessedData[],
   weights: ScoringWeights = DEFAULT_WEIGHTS,
-  marketRegime: MarketRegime = DEFAULT_MARKET_REGIME
+  marketRegime: MarketRegime = DEFAULT_MARKET_REGIME,
+  customSectorMap: Record<string, string> = {}
 ): StockRecommendation[] {
+  const defaultContext = buildDefaultMarketContext();
+  const sectorMap = mergeSectorMaps(defaultContext.sectorMap ?? {}, customSectorMap);
   const aggregates = buildStockAggregates(data);
   const results: StockRecommendation[] = [];
 
@@ -133,7 +139,7 @@ export function buildRecommendations(
     const avgTopBrokerConc = agg.avgTopBrokerConc;
     const avgVolRatio = agg.avgVolRatio;
 
-    const { verdictScore: _rawScore, confidenceAdjustedScore, grade, signal, estimateStatus, scoreBreakdown, wyckoffConfidence, dataQuality } =
+    const { verdictScore: rawScore, confidenceAdjustedScore, grade, signal, estimateStatus, scoreBreakdown, wyckoffConfidence, dataQuality } =
       computeStockLevelScore(agg, weights);
 
     // FIX A: Unified scoring — pakai confidenceAdjustedScore untuk semua keputusan
@@ -204,8 +210,10 @@ export function buildRecommendations(
 
     results.push({
       stock,
+      sector: getSectorForStock(stock, sectorMap),
       latestClose: close,
       latestDate: lr.raw.date,
+      rawScore,
       totalScore: baseScore,        // confidence-adjusted score before IHSG adjustment
       marketAdjustedScore: adjustedScore,
       marketAdjustment,

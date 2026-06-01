@@ -1,7 +1,10 @@
 import { useState, useMemo } from 'react';
 import type { ProcessedData } from '../engine/types';
-import { TrendingUp, TrendingDown, Minus, Search, ChevronUp, ChevronDown } from 'lucide-react';
+import { TrendingUp, TrendingDown, Minus, Search, ChevronUp, ChevronDown, Calendar } from 'lucide-react';
 import { formatCompact } from '../utils/format';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+
+const CHART_COLORS = ['#3fb950', '#58a6ff', '#d29922', '#bc8cff', '#f85149'];
 
 interface BrokerTrendTabProps {
   data: ProcessedData[];
@@ -21,13 +24,21 @@ interface BrokerTrendSummary {
   trend: string;           // UPTREND / DOWNTREND / SIDEWAYS
   signal: string;
   history: { date: string; netBuy: number }[];
+  totalBuyValue: number;
+  totalBuyVolume: number;
+  avgBuyPrice: number;
+  currentPrice: number;
+  floatingPct: number;
 }
+
+type DateFilter = 'ALL' | '3D' | '5D' | '1M' | '3M' | 'YTD';
 
 export function BrokerTrendTab({ data }: BrokerTrendTabProps) {
   // State filter
   const [selectedStock, setSelectedStock] = useState<string>('');
   const [sortKey, setSortKey] = useState<keyof BrokerTrendSummary>('totalNetBuy');
   const [sortAsc, setSortAsc] = useState(false);
+  const [dateFilter, setDateFilter] = useState<DateFilter>('ALL');
 
   // Daftar saham unik dari data
   const stockList = useMemo(() => {
@@ -40,11 +51,40 @@ export function BrokerTrendTab({ data }: BrokerTrendTabProps) {
   const activeStock = selectedStock || stockList[0] || '';
 
   // Filter data untuk saham yang dipilih, urutkan kronologis
-  const filteredData = useMemo(() => {
+  const stockFilteredData = useMemo(() => {
     return [...data]
       .filter(d => d.raw.stock === activeStock)
       .sort((a, b) => new Date(a.raw.date).getTime() - new Date(b.raw.date).getTime());
   }, [data, activeStock]);
+
+  const filteredData = useMemo(() => {
+    if (!stockFilteredData.length || dateFilter === 'ALL') return stockFilteredData;
+
+    const uniqueDates = Array.from(new Set(stockFilteredData.map(d => d.raw.date))).sort();
+    const latestDateStr = uniqueDates[uniqueDates.length - 1];
+    if (!latestDateStr) return stockFilteredData;
+    const latestDate = new Date(latestDateStr);
+
+    let cutoffDate = new Date(0);
+    
+    if (dateFilter === '3D') {
+      const cutoffStr = uniqueDates[Math.max(0, uniqueDates.length - 3)];
+      cutoffDate = new Date(cutoffStr);
+    } else if (dateFilter === '5D') {
+      const cutoffStr = uniqueDates[Math.max(0, uniqueDates.length - 5)];
+      cutoffDate = new Date(cutoffStr);
+    } else if (dateFilter === '1M') {
+      cutoffDate = new Date(latestDate);
+      cutoffDate.setMonth(cutoffDate.getMonth() - 1);
+    } else if (dateFilter === '3M') {
+      cutoffDate = new Date(latestDate);
+      cutoffDate.setMonth(cutoffDate.getMonth() - 3);
+    } else if (dateFilter === 'YTD') {
+      cutoffDate = new Date(latestDate.getFullYear(), 0, 1);
+    }
+
+    return stockFilteredData.filter(d => new Date(d.raw.date) >= cutoffDate);
+  }, [stockFilteredData, dateFilter]);
 
   // Hitung statistik per broker
   const brokerTrends = useMemo<BrokerTrendSummary[]>(() => {
@@ -69,6 +109,11 @@ export function BrokerTrendTab({ data }: BrokerTrendTabProps) {
           trend: 'SIDEWAYS',
           signal: 'MONITOR',
           history: [],
+          totalBuyValue: 0,
+          totalBuyVolume: 0,
+          avgBuyPrice: 0,
+          currentPrice: 0,
+          floatingPct: 0,
         });
       }
 
@@ -80,12 +125,22 @@ export function BrokerTrendTab({ data }: BrokerTrendTabProps) {
       if (netBuy > s.maxNetBuy) s.maxNetBuy = netBuy;
       if (netBuy < s.minNetBuy) s.minNetBuy = netBuy;
       s.history.push({ date: row.raw.date, netBuy });
+
+      if (row.raw.buyAvg > 0) {
+        s.totalBuyValue += row.raw.buyValue;
+        s.totalBuyVolume += (row.raw.buyValue / row.raw.buyAvg);
+      }
     });
 
     // Post-process
+    const latestClose = filteredData.length > 0 ? filteredData[filteredData.length - 1].raw.close : 0;
+    
     map.forEach(s => {
       s.avgNetBuy = s.days > 0 ? s.totalNetBuy / s.days : 0;
       if (s.minNetBuy === Infinity) s.minNetBuy = 0;
+      s.avgBuyPrice = s.totalBuyVolume > 0 ? s.totalBuyValue / s.totalBuyVolume : 0;
+      s.currentPrice = latestClose;
+      s.floatingPct = s.avgBuyPrice > 0 ? ((s.currentPrice - s.avgBuyPrice) / s.avgBuyPrice) * 100 : 0;
 
       // Konsistensi beli
       s.consistency = s.days > 0 ? (s.buyDays / s.days) * 100 : 0;
@@ -116,6 +171,57 @@ export function BrokerTrendTab({ data }: BrokerTrendTabProps) {
 
     return Array.from(map.values());
   }, [filteredData]);
+
+  // Ambil top 5 broker berdasarkan Total Net Buy tertinggi
+  const topBrokersForChart = useMemo(() => {
+    return [...brokerTrends]
+      .sort((a, b) => b.totalNetBuy - a.totalNetBuy)
+      .slice(0, 5)
+      .map(b => b.broker);
+  }, [brokerTrends]);
+
+  // Siapkan data untuk grafik kumulatif
+  const chartData = useMemo(() => {
+    if (!filteredData.length || !topBrokersForChart.length) return [];
+    
+    // Ambil tanggal unik, urutkan
+    const dates = Array.from(new Set(filteredData.map(d => d.raw.date))).sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
+    
+    // Tracking total berjalan untuk tiap broker
+    const cumulative: Record<string, number> = {};
+    topBrokersForChart.forEach(b => cumulative[b] = 0);
+    
+    const result: any[] = [];
+    
+    // Kelompokkan data per tanggal
+    const dataByDate = new Map<string, ProcessedData[]>();
+    filteredData.forEach(d => {
+      const date = d.raw.date;
+      if (!dataByDate.has(date)) dataByDate.set(date, []);
+      dataByDate.get(date)!.push(d);
+    });
+    
+    dates.forEach(date => {
+      const dayData = dataByDate.get(date) || [];
+      const entry: any = { date };
+      
+      // Tambahkan net buy hari ini ke total kumulatif
+      dayData.forEach(d => {
+        if (topBrokersForChart.includes(d.raw.broker)) {
+          cumulative[d.raw.broker] += d.flow.netBuy;
+        }
+      });
+      
+      // Simpan nilai kumulatif ke entry data grafik
+      topBrokersForChart.forEach(b => {
+        entry[b] = cumulative[b];
+      });
+      
+      result.push(entry);
+    });
+    
+    return result;
+  }, [filteredData, topBrokersForChart]);
 
   // Sorting
   const sortedBrokers = useMemo(() => {
@@ -213,6 +319,89 @@ export function BrokerTrendTab({ data }: BrokerTrendTabProps) {
         </div>
       </div>
 
+      {/* Filter Tanggal */}
+      {activeStock && (
+        <div className="card mb-6" style={{ padding: '12px 20px' }}>
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className="flex items-center gap-2">
+              <Calendar size={16} className="text-secondary" />
+              <span className="text-sm font-semibold">Rentang Waktu:</span>
+            </div>
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+              {[
+                { key: 'ALL', label: 'Semua Waktu' },
+                { key: '3D', label: '3 Hari' },
+                { key: '5D', label: '1 Minggu' },
+                { key: '1M', label: '1 Bulan' },
+                { key: '3M', label: '3 Bulan' },
+                { key: 'YTD', label: 'YTD' },
+              ].map(f => (
+                <button
+                  key={f.key}
+                  onClick={() => setDateFilter(f.key as DateFilter)}
+                  className={`btn ${dateFilter === f.key ? 'btn-primary' : 'btn-secondary'}`}
+                  style={{ padding: '4px 12px', fontSize: '0.8rem', fontWeight: 600, borderRadius: '999px' }}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Grafik Tren Kumulatif */}
+      {activeStock && chartData.length > 0 && (
+        <div className="card mb-6">
+          <div className="flex items-center gap-2 mb-4">
+            <TrendingUp className="text-blue" size={20} />
+            <h3 className="font-semibold">Kumulatif Akumulasi Top 5 Broker</h3>
+          </div>
+          <div style={{ height: '350px', width: '100%' }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={chartData} margin={{ top: 10, right: 10, left: 10, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border-color)" vertical={false} />
+                <XAxis 
+                  dataKey="date" 
+                  stroke="var(--text-secondary)" 
+                  tick={{ fontSize: 12 }}
+                  tickMargin={10}
+                  tickFormatter={(val) => {
+                    const d = new Date(val);
+                    return `${d.getDate()}/${d.getMonth()+1}`;
+                  }} 
+                />
+                <YAxis 
+                  stroke="var(--text-secondary)" 
+                  tick={{ fontSize: 12 }}
+                  tickFormatter={(val) => formatCompact(val)} 
+                  width={60}
+                />
+                <Tooltip 
+                  contentStyle={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border-color)', borderRadius: '8px' }}
+                  itemStyle={{ fontSize: '13px' }}
+                  formatter={(value: any) => formatCompact(value)}
+                  labelFormatter={(label) => new Date(label).toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })}
+                />
+                <Legend iconType="circle" wrapperStyle={{ fontSize: '13px', paddingTop: '10px' }} />
+                {topBrokersForChart.map((broker, idx) => (
+                  <Line 
+                    key={broker} 
+                    type="monotone" 
+                    dataKey={broker} 
+                    name={broker}
+                    stroke={CHART_COLORS[idx % CHART_COLORS.length]} 
+                    strokeWidth={2.5}
+                    dot={false}
+                    activeDot={{ r: 6, strokeWidth: 0 }}
+                  />
+                ))}
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+
       {/* Tabel Broker Trend */}
       {activeStock && sortedBrokers.length > 0 && (
         <div className="card">
@@ -238,6 +427,12 @@ export function BrokerTrendTab({ data }: BrokerTrendTabProps) {
                   </th>
                   <th style={{ cursor: 'pointer' }} onClick={() => handleSort('avgNetBuy')}>
                     <div className="flex items-center gap-1 justify-center">Avg/Hari <SortIcon col="avgNetBuy" /></div>
+                  </th>
+                  <th style={{ cursor: 'pointer' }} onClick={() => handleSort('avgBuyPrice')}>
+                    <div className="flex items-center gap-1 justify-center">Avg Beli <SortIcon col="avgBuyPrice" /></div>
+                  </th>
+                  <th style={{ cursor: 'pointer' }} onClick={() => handleSort('floatingPct')}>
+                    <div className="flex items-center gap-1 justify-center">Harga Saat Ini <SortIcon col="floatingPct" /></div>
                   </th>
                   <th style={{ cursor: 'pointer' }} onClick={() => handleSort('consistency')}>
                     <div className="flex items-center gap-1 justify-center">Konsistensi Beli <SortIcon col="consistency" /></div>
@@ -267,6 +462,23 @@ export function BrokerTrendTab({ data }: BrokerTrendTabProps) {
                       <span className={`font-semibold ${b.avgNetBuy > 0 ? 'text-green' : 'text-red'}`}>
                         {b.avgNetBuy > 0 ? '+' : ''}{formatCompact(b.avgNetBuy)}
                       </span>
+                    </td>
+                    <td className="text-right">
+                      <span className="font-semibold text-cyan">
+                        {b.avgBuyPrice > 0 ? Math.round(b.avgBuyPrice).toLocaleString('id-ID') : '-'}
+                      </span>
+                    </td>
+                    <td className="text-right">
+                      {b.avgBuyPrice > 0 ? (
+                        <div className="flex flex-col items-end">
+                          <span className="text-sm font-semibold">{b.currentPrice.toLocaleString('id-ID')}</span>
+                          <span className={`text-xs font-bold ${b.floatingPct > 0 ? 'text-green' : b.floatingPct < 0 ? 'text-red' : 'text-secondary'}`}>
+                            {b.floatingPct > 0 ? '+' : ''}{b.floatingPct.toFixed(2)}%
+                          </span>
+                        </div>
+                      ) : (
+                        <span className="text-secondary">-</span>
+                      )}
                     </td>
                     <td>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>

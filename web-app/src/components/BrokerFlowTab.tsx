@@ -22,12 +22,107 @@ interface BrokerFlowTabProps {
   data: ProcessedData[];
 }
 
+type BrokerSignalWindow = 'DAILY' | 'ROLLING_3D' | 'WEEKLY' | 'MONTHLY';
+
+interface BrokerSignalSummary {
+  label: string;
+  latestDate: string;
+  netBuy: number;
+  buyerPressure: number;
+  sellerPressure: number;
+  buyerRatio: number;
+  sellerRatio: number;
+  topBuyerConcentration: number;
+  signal: string;
+  domination: string;
+}
+
+function windowLabel(window: BrokerSignalWindow): string {
+  if (window === 'DAILY') return 'Harian';
+  if (window === 'ROLLING_3D') return '3 Hari';
+  if (window === 'WEEKLY') return 'Mingguan';
+  return 'Bulanan';
+}
+
+function getPeriodKey(date: string, window: BrokerSignalWindow, index: number): string {
+  if (window === 'WEEKLY') {
+    const d = new Date(`${date}T12:00:00`);
+    const day = d.getUTCDay() || 7;
+    d.setUTCDate(d.getUTCDate() + 4 - day);
+    const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+    const week = Math.ceil(((d.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
+    return `${d.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
+  }
+
+  if (window === 'MONTHLY') {
+    return date.slice(0, 7);
+  }
+
+  if (window === 'ROLLING_3D') {
+    return `ROLL_${Math.floor(index / 3)}`;
+  }
+
+  return date;
+}
+
+function buildSignalSummary(rows: ProcessedData[], window: BrokerSignalWindow): BrokerSignalSummary | null {
+  if (rows.length === 0) return null;
+
+  const sorted = [...rows].sort((a, b) => a.raw.date.localeCompare(b.raw.date));
+  const grouped = new Map<string, ProcessedData[]>();
+
+  sorted.forEach((row, index) => {
+    const key = getPeriodKey(row.raw.date, window, index);
+    const bucket = grouped.get(key) ?? [];
+    bucket.push(row);
+    grouped.set(key, bucket);
+  });
+
+  const groups = [...grouped.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  const latestGroup = groups[groups.length - 1]?.[1] ?? [];
+  if (latestGroup.length === 0) return null;
+
+  const latestDate = latestGroup[latestGroup.length - 1].raw.date;
+  const netBuy = latestGroup.reduce((sum, row) => sum + row.flow.netBuy, 0);
+  const buyerPressure = latestGroup.reduce((sum, row) => sum + Math.max(0, row.dailyTotals.top3BuyerNetBuy), 0);
+  const sellerPressure = latestGroup.reduce((sum, row) => sum + Math.abs(Math.min(0, row.dailyTotals.top3SellerNetBuy)), 0);
+  const totalPressure = buyerPressure + sellerPressure;
+  const buyerRatio = totalPressure === 0 ? 0 : (buyerPressure / totalPressure) * 100;
+  const sellerRatio = totalPressure === 0 ? 0 : (sellerPressure / totalPressure) * 100;
+  const topBuyerConcentration = latestGroup.reduce((sum, row) => sum + row.dailyTotals.topBuyerConcentration, 0) / latestGroup.length;
+
+  let signal = 'MONITOR';
+  if (netBuy > 0) {
+    signal = buyerRatio >= 60 ? 'AKUMULASI' : 'BUY PRESSURE';
+  } else if (netBuy < 0) {
+    signal = sellerRatio >= 60 ? 'DISTRIBUSI' : 'SELL PRESSURE';
+  }
+
+  let domination = 'BALANCED';
+  if (buyerRatio >= 70) domination = 'DOMINANT BUY';
+  else if (sellerRatio >= 70) domination = 'DOMINANT SELL';
+
+  return {
+    label: windowLabel(window),
+    latestDate,
+    netBuy,
+    buyerPressure,
+    sellerPressure,
+    buyerRatio,
+    sellerRatio,
+    topBuyerConcentration,
+    signal,
+    domination,
+  };
+}
+
 export function BrokerFlowTab({ data }: BrokerFlowTabProps) {
   const stocks = useMemo(() => {
     return Array.from(new Set(data.map(d => d.raw.stock))).sort();
   }, [data]);
 
   const [selectedStock, setSelectedStock] = useState<string>(stocks[0] || '');
+  const [signalWindow, setSignalWindow] = useState<BrokerSignalWindow>('ROLLING_3D');
 
   const stockData = useMemo(() => {
     if (!selectedStock) return [];
@@ -49,6 +144,7 @@ export function BrokerFlowTab({ data }: BrokerFlowTabProps) {
   }, [stockData]);
 
   const latest = stockData[stockData.length - 1];
+  const signalSummary = useMemo(() => buildSignalSummary(stockData, signalWindow), [stockData, signalWindow]);
 
   // Buyer vs seller pressure must use absolute magnitudes.
   // top3SellerNetBuy is negative by definition (net sell), so convert to absolute pressure.
@@ -108,6 +204,9 @@ export function BrokerFlowTab({ data }: BrokerFlowTabProps) {
             <div className="mt-4 flex justify-between text-xs text-secondary">
               <div>Dominasi: <strong className="text-white">{latest.flow.domination}</strong></div>
               <div>Top Broker Mkt Share: <strong className="text-white">{(latest.flow.brokerMktShare * 100).toFixed(1)}%</strong></div>
+            </div>
+            <div className="mt-4 text-xs text-secondary">
+              Snapshot di atas adalah <strong className="text-white">harian</strong>. Gunakan ringkasan agregasi di bawah untuk melihat akumulasi beberapa hari.
             </div>
           </div>
 
@@ -182,6 +281,60 @@ export function BrokerFlowTab({ data }: BrokerFlowTabProps) {
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {signalSummary && (
+        <div className="card mb-8" style={{ padding: '16px 20px' }}>
+          <div className="flex items-center justify-between gap-4 flex-wrap mb-4">
+            <h3 className="font-semibold text-sm flex items-center gap-2">
+              <Activity className="text-cyan" size={20} />
+              Ringkasan Sinyal Agregasi {signalSummary.label}
+            </h3>
+            <div className="flex gap-2 flex-wrap">
+              {(['DAILY', 'ROLLING_3D', 'WEEKLY', 'MONTHLY'] as BrokerSignalWindow[]).map((w) => (
+                <button
+                  key={w}
+                  type="button"
+                  onClick={() => setSignalWindow(w)}
+                  className="btn btn-secondary"
+                  style={{
+                    padding: '6px 10px',
+                    fontSize: '0.72rem',
+                    background: signalWindow === w ? 'rgba(46,160,67,0.15)' : undefined,
+                    borderColor: signalWindow === w ? '#3FB950' : undefined,
+                  }}
+                >
+                  {windowLabel(w)}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div className="rounded-lg p-3 bg-[var(--bg-tertiary)] border border-[var(--border-color)]">
+              <div className="text-xs text-secondary mb-1">Net Buy / Sell</div>
+              <div className={`font-bold text-lg ${signalSummary.netBuy > 0 ? 'text-green' : signalSummary.netBuy < 0 ? 'text-red' : 'text-secondary'}`}>
+                {signalSummary.netBuy > 0 ? '+' : ''}{formatCompact(signalSummary.netBuy)}
+              </div>
+            </div>
+            <div className="rounded-lg p-3 bg-[var(--bg-tertiary)] border border-[var(--border-color)]">
+              <div className="text-xs text-secondary mb-1">Status Bandar</div>
+              <div className={`font-bold text-lg ${signalSummary.signal === 'AKUMULASI' ? 'text-green' : signalSummary.signal === 'DISTRIBUSI' ? 'text-red' : 'text-yellow'}`}>
+                {signalSummary.signal}
+              </div>
+            </div>
+            <div className="rounded-lg p-3 bg-[var(--bg-tertiary)] border border-[var(--border-color)]">
+              <div className="text-xs text-secondary mb-1">Dominasi</div>
+              <div className="font-bold text-lg text-white">{signalSummary.domination}</div>
+            </div>
+            <div className="rounded-lg p-3 bg-[var(--bg-tertiary)] border border-[var(--border-color)]">
+              <div className="text-xs text-secondary mb-1">Tgl terakhir</div>
+              <div className="font-bold text-lg text-white">{signalSummary.latestDate}</div>
+            </div>
+          </div>
+          <p className="text-xs text-secondary mt-3">
+            Ringkasan agregasi ini membantu membaca akumulasi bertahap, misalnya saat 3 hari terakhir konsisten buy walau hari terakhir terlihat sell.
+          </p>
         </div>
       )}
 

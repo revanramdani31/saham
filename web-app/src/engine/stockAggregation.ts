@@ -1,33 +1,11 @@
 import type { ProcessedData } from './types';
 import { DEFAULT_WEIGHTS, type ScoringWeights } from './adaptiveScoring';
-// Lightweight local fallbacks for stockClassifier to avoid module resolution
-// errors when the external module is unavailable. These are conservative
-// defaults used only to keep this file self-contained; real implementations
-// should be provided by ./stockClassifier.
-export interface StockProfile {
-  sector: string;
-  tier: string;
-  thresholds?: Record<string, number>;
-}
-
-function getStockProfile(avgDailyMarketVal: number): StockProfile {
-  const tier = avgDailyMarketVal >= 500_000_000 ? 'LARGE' : avgDailyMarketVal >= 50_000_000 ? 'MID' : 'SMALL';
-  return { sector: 'UNKNOWN', tier, thresholds: { A_PLUS: 80, A: 70, B: 60 } };
-}
-
-function getAdaptiveGrade(score: number, profile: StockProfile): string {
-  const t = profile.thresholds ?? { A_PLUS: 80, A: 70, B: 60 };
-  if (score >= t.A_PLUS) return 'A+';
-  if (score >= t.A) return 'A';
-  if (score >= t.B) return 'B';
-  return 'C';
-}
-
-function getAdaptiveSignal(grade: string, wyckoffConfidence: number): string {
-  if (grade === 'A+' || grade === 'A') return 'BUY';
-  if (grade === 'B') return wyckoffConfidence > 50 ? 'HOLD' : 'WATCH';
-  return 'AVOID';
-}
+import {
+  getStockProfile,
+  getAdaptiveGrade,
+  getAdaptiveSignal,
+  type StockProfile
+} from './stockClassifier';
 
 interface DayFlags {
   hasAbsorption: boolean;
@@ -349,9 +327,9 @@ export function computeStockLevelScore(
 
   // === FIX 3: Grade & Signal menggunakan adaptive threshold per sektor & tier ===
   // Threshold tidak lagi statis (A+ = 80) — disesuaikan profil masing-masing saham
-  const stockProfile = getStockProfile(avgDailyMarketVal);
+  const stockProfile = getStockProfile(agg.stock, avgDailyMarketVal);
   const grade = getAdaptiveGrade(confidenceAdjustedScore, stockProfile);
-  const signal = getAdaptiveSignal(grade, snap.wyckoffConfidence);
+  const signal = getAdaptiveSignal(grade, snap.phase.dataQuality, snap.wyckoffConfidence);
 
   return {
     verdictScore,

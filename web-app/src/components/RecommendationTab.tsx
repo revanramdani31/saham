@@ -158,6 +158,11 @@ function TradingPlanCard({ rec }: { rec: StockRecommendation }) {
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
             <span style={{ fontSize: '1.3rem', fontWeight: 800, fontFamily: 'Outfit, sans-serif' }}>{rec.stock}</span>
             <VerdictBadge verdict={rec.verdict} />
+            {rec.sector !== 'UNKNOWN' && (
+              <span style={{ fontSize: '0.65rem', padding: '2px 8px', background: 'rgba(255,255,255,0.1)', borderRadius: '4px', color: 'var(--text-secondary)' }}>
+                {rec.sector}
+              </span>
+            )}
           </div>
           <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
             Update: {rec.latestDate} &nbsp;|&nbsp; Close: <strong style={{ color: 'var(--text-primary)' }}>Rp {formatPrice(rec.latestClose)}</strong>
@@ -172,7 +177,12 @@ function TradingPlanCard({ rec }: { rec: StockRecommendation }) {
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginBottom: '10px' }}>
         <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-          Base score: <strong style={{ color: '#388BFD' }}>{rec.totalScore.toFixed(1)}</strong> | IHSG delta: <strong style={{ color: rec.marketAdjustment >= 0 ? '#3FB950' : '#F85149' }}>{rec.marketAdjustment > 0 ? '+' : ''}{rec.marketAdjustment.toFixed(1)}</strong>
+          Raw score: <strong style={{ color: '#8B949E' }}>{rec.rawScore.toFixed(1)}</strong> | Base score: <strong style={{ color: '#388BFD' }}>{rec.totalScore.toFixed(1)}</strong> 
+          {rec.rawScore > rec.totalScore && (
+            <span style={{ color: '#F85149', marginLeft: '6px', fontSize: '0.7rem' }} title="Penalti karena Wyckoff Confidence rendah atau data kurang">
+              (Diskon Kepastian)
+            </span>
+          )}
         </div>
         <div style={{ textAlign: 'right' }}>
           <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: '2px' }}>
@@ -335,21 +345,32 @@ export function RecommendationTab({ data, marketContext }: RecommendationTabProp
   }, []);
 
   const recommendations = useMemo(
-    () => buildRecommendations(data, scoringWeights, marketRegime),
-    [data, scoringWeights, marketRegime]
+    () => buildRecommendations(data, scoringWeights, marketRegime, marketContext?.sectorMap),
+    [data, scoringWeights, marketRegime, marketContext?.sectorMap]
   );
   const [filter, setFilter] = useState<'ALL' | 'STRONG BUY' | 'BUY' | 'WATCH' | 'AVOID'>('ALL');
+  const [selectedSector, setSelectedSector] = useState<string>('ALL');
   const [expandedStock, setExpandedStock] = useState<string | null>(null);
 
-  const filtered = filter === 'ALL' ? recommendations : recommendations.filter(r => r.verdict === filter || (filter === 'AVOID' && (r.verdict === 'AVOID' || r.verdict === 'SELL')));
+  const sectors = useMemo(() => {
+    const s = new Set<string>();
+    s.add('ALL');
+    recommendations.forEach(r => {
+      if (r.sector && r.sector !== 'UNKNOWN') s.add(r.sector);
+    });
+    return Array.from(s).sort((a, b) => a === 'ALL' ? -1 : b === 'ALL' ? 1 : a.localeCompare(b));
+  }, [recommendations]);
 
-  const strongBuy = recommendations.filter(r => r.verdict === 'STRONG BUY').length;
-  const buy = recommendations.filter(r => r.verdict === 'BUY').length;
-  const watch = recommendations.filter(r => r.verdict === 'WATCH').length;
-  const avoid = recommendations.filter(r => r.verdict === 'AVOID' || r.verdict === 'SELL').length;
+  const sectorFiltered = selectedSector === 'ALL' ? recommendations : recommendations.filter(r => r.sector === selectedSector);
+  const filtered = filter === 'ALL' ? sectorFiltered : sectorFiltered.filter(r => r.verdict === filter || (filter === 'AVOID' && (r.verdict === 'AVOID' || r.verdict === 'SELL')));
+
+  const strongBuy = sectorFiltered.filter(r => r.verdict === 'STRONG BUY').length;
+  const buy = sectorFiltered.filter(r => r.verdict === 'BUY').length;
+  const watch = sectorFiltered.filter(r => r.verdict === 'WATCH').length;
+  const avoid = sectorFiltered.filter(r => r.verdict === 'AVOID' || r.verdict === 'SELL').length;
 
   const filterBtns: { key: 'ALL' | 'STRONG BUY' | 'BUY' | 'WATCH' | 'AVOID'; label: string; count: number; color: string }[] = [
-    { key: 'ALL', label: 'Semua', count: recommendations.length, color: '#388BFD' },
+    { key: 'ALL', label: 'Semua', count: sectorFiltered.length, color: '#388BFD' },
     { key: 'STRONG BUY', label: '🚀 Strong Buy', count: strongBuy, color: '#3FB950' },
     { key: 'BUY', label: '✅ Buy', count: buy, color: '#58A6FF' },
     { key: 'WATCH', label: '👀 Watch', count: watch, color: '#D29922' },
@@ -422,7 +443,8 @@ export function RecommendationTab({ data, marketContext }: RecommendationTabProp
       </div>
 
       {/* Filter buttons */}
-      <div style={{ display: 'flex', gap: '8px', marginBottom: '20px', flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
         {filterBtns.map(btn => (
           <button
             key={btn.key}
@@ -447,6 +469,20 @@ export function RecommendationTab({ data, marketContext }: RecommendationTabProp
             </span>
           </button>
         ))}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Sektor:</span>
+          <select 
+            value={selectedSector}
+            onChange={(e) => setSelectedSector(e.target.value)}
+            style={{
+              padding: '6px 12px', borderRadius: '8px', border: '1px solid var(--border-color)',
+              background: 'var(--bg-tertiary)', color: 'var(--text-primary)', fontSize: '0.8rem', outline: 'none', cursor: 'pointer'
+            }}
+          >
+            {sectors.map(s => <option key={s} value={s}>{s === 'ALL' ? 'Semua Sektor' : s}</option>)}
+          </select>
+        </div>
       </div>
 
       {/* Summary Table */}
